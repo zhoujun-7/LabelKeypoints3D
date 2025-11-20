@@ -482,6 +482,7 @@ class LabelingTab(QWidget):
         self.current_frame = 0
         self.is_setup = False  # Track if labeling is ready
         self.saved_json_path = None  # Track if JSON has been saved
+        self.saved_yolo_path = None  # Track if YOLO format has been saved
         self.setFocusPolicy(Qt.StrongFocus)  # Enable keyboard focus
         self.init_ui()
     
@@ -542,20 +543,14 @@ class LabelingTab(QWidget):
         self.check_visibility_checkbox.stateChanged.connect(self.on_visibility_check_changed)
         id_layout.addWidget(self.check_visibility_checkbox)
         
-        # Calculate Triangulation button
-        self.calc_triangulation_btn = QPushButton("Calculate Triangulation")
-        self.calc_triangulation_btn.clicked.connect(self.on_calculate_triangulation_clicked)
-        self.calc_triangulation_btn.setEnabled(False)  # Disabled until labeling is ready
-        id_layout.addWidget(self.calc_triangulation_btn)
-        
         # Save Label button
-        self.save_label_btn = QPushButton("Save Label")
+        self.save_label_btn = QPushButton("Save Label (json)")
         self.save_label_btn.clicked.connect(self.on_save_label_clicked)
         self.save_label_btn.setEnabled(False)  # Disabled until labeling is ready
         id_layout.addWidget(self.save_label_btn)
         
         # Save YOLO pose format button
-        self.save_yolo_btn = QPushButton("Save YOLO pose format")
+        self.save_yolo_btn = QPushButton("Save Label (YOLO pose)")
         self.save_yolo_btn.clicked.connect(self.on_save_yolo_clicked)
         self.save_yolo_btn.setEnabled(False)  # Disabled until labeling is ready
         id_layout.addWidget(self.save_yolo_btn)
@@ -833,9 +828,30 @@ class LabelingTab(QWidget):
     def start_processing(self):
         # Clear previous session data when starting a new session
         if self.is_setup:
-            # Ask user if they want to start a new session (only if there's existing data)
+            # Check if there's any labeling data or calculated data
             has_data = (self.labeling_data or self.calculated_2d or self.calculated_3d)
-            if has_data:
+            
+            # Check if data has been saved (either JSON or YOLO format)
+            json_saved = self.saved_json_path is not None
+            yolo_saved = self.saved_yolo_path is not None
+            data_saved = json_saved or yolo_saved
+            
+            # If there's data but nothing saved, warn user
+            if has_data and not data_saved:
+                reply = QMessageBox.warning(
+                    self,
+                    "Unsaved Changes",
+                    "You have unsaved labeling data. Please save your work before starting a new session.\n\n"
+                    "Click 'Yes' to continue without saving (this will clear all current data), "
+                    "or 'No' to cancel and save your work.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if reply == QMessageBox.No:
+                    return  # User cancelled
+            elif has_data:
+                # Data exists but has been saved - just confirm
                 reply = QMessageBox.question(
                     self,
                     "Start New Session",
@@ -997,7 +1013,6 @@ class LabelingTab(QWidget):
         self.is_setup = True
         
         # Enable labeling controls
-        self.calc_triangulation_btn.setEnabled(True)
         self.save_label_btn.setEnabled(True)
         self.save_yolo_btn.setEnabled(True)
         
@@ -1140,6 +1155,10 @@ class LabelingTab(QWidget):
     def set_saved_json_path(self, json_path):
         """Set the saved JSON path to track if data has been saved"""
         self.saved_json_path = json_path
+    
+    def set_saved_yolo_path(self, yolo_path):
+        """Set the saved YOLO path to track if data has been saved"""
+        self.saved_yolo_path = yolo_path
     
     def update_frame_display(self):
         """Update image and keypoints display"""
@@ -1748,13 +1767,13 @@ class LabelingTab(QWidget):
         self.current_frame = 0
         self.is_setup = False
         self.saved_json_path = None
+        self.saved_yolo_path = None
         
         # Reset UI
         self.image_label.set_image(None)
         self.image_label.clear_keypoints()
         self.timeline_slider.setMaximum(0)
         self.frame_label.setText("Frame: 0 / 0")
-        self.calc_triangulation_btn.setEnabled(False)
         self.save_label_btn.setEnabled(False)
         self.save_yolo_btn.setEnabled(False)
         self.object_id_spin.setValue(1)

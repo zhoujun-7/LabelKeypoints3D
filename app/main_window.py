@@ -79,6 +79,7 @@ class MainWindow(QMainWindow):
         self.labeling_data = {}  # {frame_id: {object_id: {keypoint_id: {'2d': [x, y], '3d': [x, y, z]}}}}
         self.loaded_json_path = None
         self.saved_json_path = None  # Track if JSON has been saved during this session
+        self.saved_yolo_path = None  # Track if YOLO format has been saved during this session
         
         # Central widget with tabs
         self.central_widget = QWidget()
@@ -124,6 +125,7 @@ class MainWindow(QMainWindow):
         self.labeling_data = {}
         self.loaded_json_path = None
         self.saved_json_path = None
+        self.saved_yolo_path = None
         
         # Store params for later use
         self._last_params = params
@@ -1332,6 +1334,10 @@ class MainWindow(QMainWindow):
         self.labeling_tab.log_message(f"  Skipped: {skipped_count} frames")
         self.labeling_tab.log_message(f"  Output directory: {output_dir}")
         
+        # Track saved YOLO path
+        self.saved_yolo_path = output_dir
+        self.labeling_tab.set_saved_yolo_path(output_dir)
+        
         QMessageBox.information(self, "Success",
                                f"YOLO format saved to:\n{output_dir}\n\n"
                                f"Processed: {processed_count} frames\n"
@@ -1343,16 +1349,18 @@ class MainWindow(QMainWindow):
         has_labeling_data = bool(self.labeling_data)
         has_calculated_data = bool(self.labeling_tab.calculated_2d or self.labeling_tab.calculated_3d)
         
-        # Check if JSON has been saved (either loaded or saved during this session)
+        # Check if data has been saved (either JSON or YOLO format)
         json_saved = self.saved_json_path is not None or self.loaded_json_path is not None
+        yolo_saved = self.saved_yolo_path is not None
+        data_saved = json_saved or yolo_saved
         
-        # If there's data but no JSON saved, prompt user
-        if (has_labeling_data or has_calculated_data) and not json_saved:
-            reply = QMessageBox.question(
+        # If there's data but nothing saved, prompt user
+        if (has_labeling_data or has_calculated_data) and not data_saved:
+            reply = QMessageBox.warning(
                 self,
-                "Confirm Exit",
-                "You have unsaved labeling data. Are you sure you want to exit?\n\n"
-                "Click 'Yes' to exit without saving, or 'No' to cancel.",
+                "Unsaved Changes",
+                "You have unsaved labeling data. Please save your work before exiting.\n\n"
+                "Click 'Yes' to exit without saving, or 'No' to cancel and save your work.",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No
             )
