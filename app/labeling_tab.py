@@ -1232,14 +1232,8 @@ class LabelingTab(QWidget):
                         
                         if not is_user_labeled:
                             x, y = point_2d
-                            # Try to get cls_id from labeling_data if available, otherwise default to 1
-                            cls_id = 1
-                            if (frame_id in self.labeling_data and 
-                                obj_id in self.labeling_data[frame_id]):
-                                # Get cls_id from any keypoint of this object in this frame
-                                for kp_id_temp, data_temp in self.labeling_data[frame_id][obj_id].items():
-                                    cls_id = data_temp.get('cls_id', 1)
-                                    break  # Use first available cls_id
+                            # Get cls_id from any manually labeled keypoint of this object across all frames
+                            cls_id = self.get_object_cls_id(obj_id)
                             keypoints_to_show.append((x, y, obj_id, kp_id, frame_id, True, cls_id))
                             calc_count += 1
                             print(f"[DISPLAY]   Calculated: Object {obj_id}, Keypoint {kp_id} at ({x:.2f}, {y:.2f})")
@@ -1264,6 +1258,26 @@ class LabelingTab(QWidget):
         """Handle visibility check checkbox change"""
         # Update display when checkbox state changes
         self.update_frame_display()
+    
+    def get_object_cls_id(self, object_id):
+        """
+        Get the class ID for an object by searching all frames for manually labeled keypoints.
+        
+        Args:
+            object_id: Object ID to get class ID for
+            
+        Returns:
+            int: Class ID for the object, or 1 if not found
+        """
+        # Search all frames for this object
+        for frame_id, objects in self.labeling_data.items():
+            if object_id in objects:
+                # Get cls_id from any keypoint of this object in this frame
+                for kp_id, data in objects[object_id].items():
+                    # Return the first cls_id we find (defaults to 1 if not set)
+                    return data.get('cls_id', 1)
+        # Default to 1 if object not found in any frame
+        return 1
     
     def check_object_visibility(self, frame_id, object_id):
         """
