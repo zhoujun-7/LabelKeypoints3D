@@ -1,5 +1,7 @@
 # 3D and 2D Keypoints Labeling Application
 
+[中文](README_zh.md)
+
 ## Introduction
 
 This application is designed for labeling 2D and 3D keypoints in static scenes. It uses ArUco markers to calculate camera intrinsics and extrinsics, enabling efficient keypoint annotation across multiple viewpoints.
