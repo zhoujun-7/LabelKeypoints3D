@@ -401,13 +401,13 @@ class MainWindow(QMainWindow):
                 # User cancelled or chose not to downsample
                 self.labeling_tab.log_message(f"Proceeding with all {num_images} images (may take longer)")
         
-        # Show progress dialog with spinner
-        self.progress_dialog = QProgressDialog("Calculating ArUco markers and camera poses...", None, 0, 0, self)
+        # Show progress dialog with progress bar
+        self.progress_dialog = QProgressDialog("Calculating ArUco markers and camera poses...", None, 0, 100, self)
         self.progress_dialog.setWindowTitle("Processing")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setCancelButton(None)  # No cancel button
         self.progress_dialog.setMinimumDuration(0)  # Show immediately
-        self.progress_dialog.setRange(0, 0)  # Indeterminate progress (spinner)
+        self.progress_dialog.setValue(0)
         self.progress_dialog.show()
         QApplication.processEvents()  # Ensure dialog is shown
         
@@ -428,14 +428,20 @@ class MainWindow(QMainWindow):
         self.aruco_processor.finished_signal.connect(self.on_aruco_processing_complete)
         self.aruco_processor.start()
     
-    def _update_progress_message(self, message):
-        """Update progress dialog message and log area"""
+    def _update_progress_message(self, message, current=0, total=0):
+        """Update progress dialog message with progress percentage"""
         if self.progress_dialog:
             self.progress_dialog.setLabelText(message)
+            # Update progress bar if we have valid progress values
+            if total > 0:
+                # Calculate percentage
+                progress_pct = int(100 * current / total)
+                self.progress_dialog.setValue(progress_pct)
+                self.progress_dialog.setRange(0, 100)
+            else:
+                # Indeterminate progress (spinner mode)
+                self.progress_dialog.setRange(0, 0)
             QApplication.processEvents()  # Update UI
-        # Also add message to log area (directly append to avoid recursion)
-        if hasattr(self.labeling_tab, 'log_text') and self.labeling_tab.log_text:
-            self.labeling_tab.log_text.append(message)
     
     def on_aruco_processing_complete(self, result):
         """Handle completion of ArUco processing"""

@@ -2,8 +2,9 @@
 Trajectory visualization tab for ArUco poses and camera trajectory
 """
 
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QProgressDialog
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtWidgets import QApplication
 import numpy as np
 import cv2
 try:
@@ -62,8 +63,25 @@ class TrajectoryTab(QWidget):
             self.status_label.setText("No trajectory data available.")
             return
         
+        # Show progress dialog for visualization
+        total_steps = len(aruco_poses) + len(camera_poses) + 5  # +5 for setup steps
+        progress_dialog = QProgressDialog("Visualizing trajectory...", None, 0, total_steps, self)
+        progress_dialog.setWindowTitle("Visualization")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setCancelButton(None)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.show()
+        QApplication.processEvents()
+        
+        current_step = 0
+        
         # Clear previous plots
         self.fig.clear()
+        current_step += 1
+        progress_dialog.setValue(current_step)
+        progress_dialog.setLabelText("Clearing previous plots...")
+        QApplication.processEvents()
         
         # Create 3D subplot
         ax = self.fig.add_subplot(111, projection='3d')
@@ -106,7 +124,8 @@ class TrajectoryTab(QWidget):
         if aruco_poses:
             marker_pos_list = []
             marker_ids = []
-            for marker_id, pose in aruco_poses.items():
+            total_markers = len(aruco_poses)
+            for idx, (marker_id, pose) in enumerate(aruco_poses.items()):
                 tvec = np.array(pose['tvec'])
                 rvec = np.array(pose['rvec'])
                 marker_pos_list.append(tvec)
@@ -141,15 +160,28 @@ class TrajectoryTab(QWidget):
                 # Add label for marker
                 ax.text(tvec[0], tvec[1], tvec[2], f'  ArUco {marker_id}', 
                        color='#90EE90', fontsize=9, fontweight='bold')
+                
+                # Update progress every 5 markers or at the end
+                if (idx + 1) % 5 == 0 or (idx + 1) == total_markers:
+                    current_step += 1
+                    progress_dialog.setValue(current_step)
+                    progress_dialog.setLabelText(f"Plotting ArUco markers... ({idx + 1}/{total_markers})")
+                    QApplication.processEvents()
             
             if marker_pos_list:
                 marker_positions = np.array(marker_pos_list)
         
         # Plot camera trajectory line first (before poses to ensure visibility)
         if camera_poses:
+            current_step += 1
+            progress_dialog.setValue(current_step)
+            progress_dialog.setLabelText("Computing camera trajectory...")
+            QApplication.processEvents()
+            
             camera_pos_list = []
             frame_ids = []
-            for frame_id in sorted(camera_poses.keys()):
+            total_cameras = len(camera_poses)
+            for idx, frame_id in enumerate(sorted(camera_poses.keys())):
                 pose = camera_poses[frame_id]
                 rvec = np.array(pose['rvec'])
                 tvec = np.array(pose['tvec'])
@@ -160,11 +192,21 @@ class TrajectoryTab(QWidget):
                 cam_pos = -R.T @ tvec
                 camera_pos_list.append(cam_pos)
                 frame_ids.append(frame_id)
+                
+                # Update progress every 20 frames or at the end
+                if (idx + 1) % 20 == 0 or (idx + 1) == total_cameras:
+                    progress_dialog.setLabelText(f"Computing camera trajectory... ({idx + 1}/{total_cameras})")
+                    QApplication.processEvents()
             
             if camera_pos_list:
                 camera_positions = np.array(camera_pos_list)
                 print(f"[TRAJECTORY] Plotting camera trajectory with {len(camera_positions)} points")
                 print(f"[TRAJECTORY] First point: {camera_positions[0]}, Last point: {camera_positions[-1]}")
+                
+                current_step += 1
+                progress_dialog.setValue(current_step)
+                progress_dialog.setLabelText("Plotting camera trajectory line...")
+                QApplication.processEvents()
                 
                 # Plot camera trajectory line (red, thick, high z-order)
                 ax.plot(camera_positions[:, 0], camera_positions[:, 1], camera_positions[:, 2],
@@ -172,52 +214,71 @@ class TrajectoryTab(QWidget):
         
         # Plot camera poses as RGB coordinate axes (sample every few frames to avoid clutter)
         if camera_poses:
+            current_step += 1
+            progress_dialog.setValue(current_step)
+            progress_dialog.setLabelText("Plotting camera poses...")
+            QApplication.processEvents()
+            
             sample_rate = max(1, len(camera_poses) // 20)  # Show ~20 camera poses
-            for idx, frame_id in enumerate(sorted(camera_poses.keys())):
-                if idx % sample_rate == 0 or idx == len(camera_poses) - 1:  # Always show last frame
-                    pose = camera_poses[frame_id]
-                    rvec = np.array(pose['rvec'])
-                    tvec = np.array(pose['tvec'])
-                    
-                    # Convert camera pose to world position
-                    R, _ = cv2.Rodrigues(rvec)
-                    cam_pos = -R.T @ tvec
-                    
-                    # Calculate axis directions (R^T columns are the camera axes in world frame)
-                    # Camera X axis (right) in world frame
-                    x_axis = R.T[:, 0] * camera_axis_length
-                    # Camera Y axis (down) in world frame
-                    y_axis = R.T[:, 1] * camera_axis_length
-                    # Camera Z axis (forward) in world frame
-                    z_axis = R.T[:, 2] * camera_axis_length
-                    
-                    # Plot X axis (red) - lower z-order so trajectory is visible
-                    ax.plot([cam_pos[0], cam_pos[0] + x_axis[0]], 
-                           [cam_pos[1], cam_pos[1] + x_axis[1]], 
-                           [cam_pos[2], cam_pos[2] + x_axis[2]], 
-                           color=camera_colors['x'], linewidth=2.5, alpha=0.9, zorder=2)
-                    
-                    # Plot Y axis (green) - lower z-order so trajectory is visible
-                    ax.plot([cam_pos[0], cam_pos[0] + y_axis[0]], 
-                           [cam_pos[1], cam_pos[1] + y_axis[1]], 
-                           [cam_pos[2], cam_pos[2] + y_axis[2]], 
-                           color=camera_colors['y'], linewidth=2.5, alpha=0.9, zorder=2)
-                    
-                    # Plot Z axis (blue) - lower z-order so trajectory is visible
-                    ax.plot([cam_pos[0], cam_pos[0] + z_axis[0]], 
-                           [cam_pos[1], cam_pos[1] + z_axis[1]], 
-                           [cam_pos[2], cam_pos[2] + z_axis[2]], 
-                           color=camera_colors['z'], linewidth=2.5, alpha=0.9, zorder=2)
-                    
-                    # Add label for camera (only for first and last)
-                    if idx == 0:
-                        ax.text(cam_pos[0], cam_pos[1], cam_pos[2], f'  Camera Start', 
-                               color='#FFFF00', fontsize=9, fontweight='bold')
-                    elif idx == len(camera_poses) - 1:
-                        ax.text(cam_pos[0], cam_pos[1], cam_pos[2], f'  Camera End', 
-                               color='#FFFF00', fontsize=9, fontweight='bold')
+            sampled_frames = [fid for idx, fid in enumerate(sorted(camera_poses.keys())) 
+                            if idx % sample_rate == 0 or idx == len(camera_poses) - 1]
+            total_sampled = len(sampled_frames)
+            
+            for plot_idx, frame_id in enumerate(sampled_frames):
+                idx = sorted(camera_poses.keys()).index(frame_id)
+                pose = camera_poses[frame_id]
+                rvec = np.array(pose['rvec'])
+                tvec = np.array(pose['tvec'])
+                
+                # Convert camera pose to world position
+                R, _ = cv2.Rodrigues(rvec)
+                cam_pos = -R.T @ tvec
+                
+                # Calculate axis directions (R^T columns are the camera axes in world frame)
+                # Camera X axis (right) in world frame
+                x_axis = R.T[:, 0] * camera_axis_length
+                # Camera Y axis (down) in world frame
+                y_axis = R.T[:, 1] * camera_axis_length
+                # Camera Z axis (forward) in world frame
+                z_axis = R.T[:, 2] * camera_axis_length
+                
+                # Plot X axis (red) - lower z-order so trajectory is visible
+                ax.plot([cam_pos[0], cam_pos[0] + x_axis[0]], 
+                       [cam_pos[1], cam_pos[1] + x_axis[1]], 
+                       [cam_pos[2], cam_pos[2] + x_axis[2]], 
+                       color=camera_colors['x'], linewidth=2.5, alpha=0.9, zorder=2)
+                
+                # Plot Y axis (green) - lower z-order so trajectory is visible
+                ax.plot([cam_pos[0], cam_pos[0] + y_axis[0]], 
+                       [cam_pos[1], cam_pos[1] + y_axis[1]], 
+                       [cam_pos[2], cam_pos[2] + y_axis[2]], 
+                       color=camera_colors['y'], linewidth=2.5, alpha=0.9, zorder=2)
+                
+                # Plot Z axis (blue) - lower z-order so trajectory is visible
+                ax.plot([cam_pos[0], cam_pos[0] + z_axis[0]], 
+                       [cam_pos[1], cam_pos[1] + z_axis[1]], 
+                       [cam_pos[2], cam_pos[2] + z_axis[2]], 
+                       color=camera_colors['z'], linewidth=2.5, alpha=0.9, zorder=2)
+                
+                # Add label for camera (only for first and last)
+                if idx == 0:
+                    ax.text(cam_pos[0], cam_pos[1], cam_pos[2], f'  Camera Start', 
+                           color='#FFFF00', fontsize=9, fontweight='bold')
+                elif idx == len(camera_poses) - 1:
+                    ax.text(cam_pos[0], cam_pos[1], cam_pos[2], f'  Camera End', 
+                           color='#FFFF00', fontsize=9, fontweight='bold')
+                
+                # Update progress
+                if (plot_idx + 1) % 5 == 0 or (plot_idx + 1) == total_sampled:
+                    progress_dialog.setLabelText(f"Plotting camera poses... ({plot_idx + 1}/{total_sampled})")
+                    QApplication.processEvents()
         
         # Set labels and title
+        current_step += 1
+        progress_dialog.setValue(current_step)
+        progress_dialog.setLabelText("Setting up axes and labels...")
+        QApplication.processEvents()
+        
         ax.set_xlabel('X (m)', color='#cccccc')
         ax.set_ylabel('Y (m)', color='#cccccc')
         ax.set_zlabel('Z (m)', color='#cccccc')
@@ -271,8 +332,16 @@ class TrajectoryTab(QWidget):
         self.status_label.setText(status_text)
         
         # Refresh canvas
+        current_step += 1
+        progress_dialog.setValue(current_step)
+        progress_dialog.setLabelText("Rendering visualization...")
+        QApplication.processEvents()
+        
         self.fig.tight_layout()
         self.canvas.draw()
+        
+        # Close progress dialog
+        progress_dialog.close()
         
         print(f"[TRAJECTORY] Visualization updated successfully")
 

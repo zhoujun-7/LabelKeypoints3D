@@ -58,7 +58,7 @@ except ImportError:
 
 
 class ArucoProcessor(QThread):
-    progress_signal = Signal(str)
+    progress_signal = Signal(str, int, int)  # message, current, total (0, 0 for indeterminate)
     finished_signal = Signal(dict)
     
     def __init__(self, image_dir, aruco_params, camera_intrinsic, enable_ba=True):
@@ -86,7 +86,7 @@ class ArucoProcessor(QThread):
             print(f"[ARUCO PROCESSOR] Camera intrinsic provided: {self.camera_intrinsic is not None}")
             
             # Load images
-            self.progress_signal.emit("Loading images...")
+            self.progress_signal.emit("Loading images...", 0, 0)
             image_paths = sorted(glob.glob(os.path.join(self.image_dir, "*.jpg")) +
                                 glob.glob(os.path.join(self.image_dir, "*.png")) +
                                 glob.glob(os.path.join(self.image_dir, "*.jpeg")))
@@ -99,10 +99,14 @@ class ArucoProcessor(QThread):
             print(f"[ARUCO PROCESSOR] Found {len(image_paths)} image files")
             
             images = []
-            for path in image_paths:
+            total_images = len(image_paths)
+            for idx, path in enumerate(image_paths):
                 img = cv2.imread(path)
                 if img is not None:
                     images.append(img)
+                # Update progress every 10 images or at the end
+                if (idx + 1) % 10 == 0 or (idx + 1) == total_images:
+                    self.progress_signal.emit(f"Loading images... ({idx + 1}/{total_images})", idx + 1, total_images)
             
             if not images:
                 print(f"[ARUCO PROCESSOR] ERROR: Failed to load images")
@@ -110,7 +114,7 @@ class ArucoProcessor(QThread):
                 return
             
             print(f"[ARUCO PROCESSOR] Successfully loaded {len(images)} images")
-            self.progress_signal.emit(f"Loaded {len(images)} images")
+            self.progress_signal.emit(f"Loaded {len(images)} images", len(images), len(images))
             
             # Initialize ArUco detector with improved parameters to suppress false positives
             aruco_dict = cv2.aruco.getPredefinedDictionary(
@@ -135,7 +139,7 @@ class ArucoProcessor(QThread):
             print(f"[ARUCO PROCESSOR]   errorCorrectionRate: {ARUCO_ERROR_CORRECTION_RATE}")
             
             # Detect ArUco markers in all images
-            self.progress_signal.emit("Detecting ArUco markers...")
+            self.progress_signal.emit("Detecting ArUco markers...", 0, len(images))
             print(f"[ARUCO PROCESSOR] Detecting ArUco markers in {len(images)} images...")
             print(f"[ARUCO PROCESSOR] Using provided camera intrinsic:")
             print(f"[ARUCO PROCESSOR]   fx={self.camera_intrinsic[0,0]:.2f}, fy={self.camera_intrinsic[1,1]:.2f}")
@@ -144,6 +148,7 @@ class ArucoProcessor(QThread):
             marker_size = self.aruco_params['physical_length']
             
             frame_detection_counts = {}
+            total_images = len(images)
             for img_idx, img in enumerate(images):
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 corners, ids, _ = detector.detectMarkers(gray)
@@ -180,6 +185,10 @@ class ArucoProcessor(QThread):
                             })
                 else:
                     frame_detection_counts[img_idx] = 0
+                
+                # Update progress every 10 images or at the end
+                if (img_idx + 1) % 10 == 0 or (img_idx + 1) == total_images:
+                    self.progress_signal.emit(f"Detecting ArUco markers... ({img_idx + 1}/{total_images})", img_idx + 1, total_images)
             
             if not all_detections:
                 print(f"[ARUCO PROCESSOR] ERROR: No ArUco markers detected in any image")
@@ -189,7 +198,7 @@ class ArucoProcessor(QThread):
             print(f"[ARUCO PROCESSOR] Detected {len(all_detections)} marker instances across {len(frame_detection_counts)} frames")
             print(f"[ARUCO PROCESSOR] Frames with markers: {sum(1 for c in frame_detection_counts.values() if c > 0)}")
             print(f"[ARUCO PROCESSOR] Frames without markers: {sum(1 for c in frame_detection_counts.values() if c == 0)}")
-            self.progress_signal.emit(f"Detected {len(all_detections)} marker instances")
+            self.progress_signal.emit(f"Detected {len(all_detections)} marker instances", total_images, total_images)
             
             # Filter images based on ArUco count threshold
             original_image_count = len(images)
@@ -229,7 +238,7 @@ class ArucoProcessor(QThread):
             ignored_count = original_image_count - len(filtered_images)
             print(f"[ARUCO PROCESSOR] Filtered: {original_image_count} -> {len(filtered_images)} images ({ignored_count} images ignored)")
             print(f"[ARUCO PROCESSOR] Filtered: {original_detection_count} -> {len(filtered_detections)} detections")
-            self.progress_signal.emit(f"Filtered to {len(filtered_images)} images (ignored {ignored_count} images with <{MIN_ARUCO_COUNT} ArUco markers)")
+            self.progress_signal.emit(f"Filtered to {len(filtered_images)} images (ignored {ignored_count} images with <{MIN_ARUCO_COUNT} ArUco markers)", 0, 0)
             
             # Update images and image_paths for bundle adjustment
             images = filtered_images
@@ -238,14 +247,14 @@ class ArucoProcessor(QThread):
             
             # Bundle adjustment (optional)
             if self.enable_ba:
-                self.progress_signal.emit("Performing bundle adjustment...")
+                self.progress_signal.emit("Performing bundle adjustment...", 0, 0)
                 print(f"[ARUCO PROCESSOR] Starting bundle adjustment with {len(all_detections)} detections...")
                 optimized_result = self.bundle_adjustment(all_detections, images, marker_size, enable_ba=True)
                 print(f"[ARUCO PROCESSOR] Bundle adjustment completed")
                 # Bundle adjustment may filter images, so use filtered images from result
                 result_images = optimized_result.get('images', images)
             else:
-                self.progress_signal.emit("Skipping bundle adjustment (disabled)...")
+                self.progress_signal.emit("Skipping bundle adjustment (disabled)...", 0, 0)
                 print(f"[ARUCO PROCESSOR] Bundle adjustment disabled, using initial poses...")
                 optimized_result = self.bundle_adjustment(all_detections, images, marker_size, enable_ba=False)
                 print(f"[ARUCO PROCESSOR] Using initial poses (no optimization)")
@@ -1132,16 +1141,17 @@ class ArucoProcessor(QThread):
                 # Clear gradients without backward propagation
                 optimizer.zero_grad()
             
-            # Log every 100 iterations
-            if (iter_idx + 1) % 100 == 0 or iter_idx == 0:
+            # Log every 10 iterations (more frequent updates)
+            if (iter_idx + 1) % 10 == 0 or iter_idx == 0:
                 # Compute mean error over visible corners only
                 # mean_error = torch.sqrt(loss).item()
                 reprojection_error = error_norm * mask_expanded
                 mean_error = reprojection_error.sum() / (mask_expanded.sum() * n_corners + 1e-8)
                 mean_error = mean_error.item()
-                log_msg = f"[NO-BA2] Iter {iter_idx+1}/{max_iterations}: mean reprojection error = {mean_error:.4f} pixels"
-                print(log_msg)
-                self.progress_signal.emit(log_msg)
+                progress_pct = int(100 * (iter_idx + 1) / max_iterations)
+                log_msg = f"Optimizing... Iter {iter_idx+1}/{max_iterations} ({progress_pct}%): error = {mean_error:.4f} pixels"
+                print(f"[NO-BA2] Iter {iter_idx+1}/{max_iterations}: mean reprojection error = {mean_error:.4f} pixels")
+                self.progress_signal.emit(log_msg, iter_idx + 1, max_iterations)
 
         reprojection_error = error_norm * mask_expanded
         mean_error = reprojection_error.sum() / (mask_expanded.sum() * n_corners + 1e-8)
