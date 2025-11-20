@@ -12,6 +12,7 @@ from scipy.optimize import least_squares
 import glob
 import time
 import torch
+import multiprocessing as mp
 
 # Import default configuration
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -55,6 +56,77 @@ except ImportError:
     BA_LEARNING_RATE = 1e-3
     BA_MAX_ITERATIONS = 1000
     REPROJECTION_ERROR_THRESHOLD = 10.0
+
+
+def _detect_aruco_worker(args):
+    """
+    Worker function for multiprocessing ArUco detection.
+    
+    Args:
+        args: tuple of (img_idx, img, aruco_params, camera_intrinsic, marker_size)
+    
+    Returns:
+        tuple: (img_idx, detections_list, detection_count)
+    """
+    img_idx, img, aruco_params, camera_intrinsic, marker_size = args
+    
+    # Recreate detector in worker process (cannot share OpenCV objects across processes)
+    aruco_dict = cv2.aruco.getPredefinedDictionary(
+        getattr(cv2.aruco, aruco_params['dict_type'])
+    )
+    parameters = cv2.aruco.DetectorParameters()
+    
+    # Configure parameters to suppress false positives
+    parameters.minCornerDistanceRate = ARUCO_MIN_CORNER_DISTANCE_RATE
+    parameters.minMarkerDistanceRate = ARUCO_MIN_MARKER_DISTANCE_RATE
+    parameters.polygonalApproxAccuracyRate = ARUCO_POLYGONAL_APPROX_ACCURACY_RATE
+    parameters.minMarkerPerimeterRate = ARUCO_MIN_MARKER_PERIMETER_RATE
+    parameters.maxMarkerPerimeterRate = ARUCO_MAX_MARKER_PERIMETER_RATE
+    parameters.minOtsuStdDev = ARUCO_MIN_OTSU_STD_DEV
+    parameters.adaptiveThreshConstant = ARUCO_ADAPTIVE_THRESH_CONSTANT
+    parameters.errorCorrectionRate = ARUCO_ERROR_CORRECTION_RATE
+    
+    detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
+    
+    # Detect markers
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = detector.detectMarkers(gray)
+    
+    detections = []
+    detection_count = 0
+    
+    if ids is not None:
+        detection_count = len(ids.flatten())
+        # Estimate pose for each marker
+        for i, marker_id in enumerate(ids.flatten()):
+            marker_corners = corners[i][0]
+            
+            # Generate 3D object points
+            obj_points = np.array([
+                [-marker_size/2, marker_size/2, 0],
+                [marker_size/2, marker_size/2, 0],
+                [marker_size/2, -marker_size/2, 0],
+                [-marker_size/2, -marker_size/2, 0]
+            ], dtype=np.float32)
+            
+            # Estimate pose
+            success, rvec, tvec = cv2.solvePnP(
+                obj_points,
+                marker_corners,
+                camera_intrinsic,
+                None
+            )
+            
+            if success:
+                detections.append({
+                    'image_idx': img_idx,
+                    'marker_id': int(marker_id),
+                    'corners': marker_corners,
+                    'rvec': rvec.flatten(),
+                    'tvec': tvec.flatten()
+                })
+    
+    return (img_idx, detections, detection_count)
 
 
 class ArucoProcessor(QThread):
@@ -138,7 +210,7 @@ class ArucoProcessor(QThread):
             print(f"[ARUCO PROCESSOR]   minMarkerDistanceRate: {ARUCO_MIN_MARKER_DISTANCE_RATE}")
             print(f"[ARUCO PROCESSOR]   errorCorrectionRate: {ARUCO_ERROR_CORRECTION_RATE}")
             
-            # Detect ArUco markers in all images
+            # Detect ArUco markers in all images using multiprocessing
             self.progress_signal.emit("Detecting ArUco markers...", 0, len(images))
             print(f"[ARUCO PROCESSOR] Detecting ArUco markers in {len(images)} images...")
             print(f"[ARUCO PROCESSOR] Using provided camera intrinsic:")
@@ -147,48 +219,96 @@ class ArucoProcessor(QThread):
             all_detections = []  # List of (image_idx, marker_id, corners, rvec, tvec)
             marker_size = self.aruco_params['physical_length']
             
+            # Determine number of processes to use
+            num_processes = min(mp.cpu_count(), len(images), 8)  # Limit to 8 processes max
+            print(f"[ARUCO PROCESSOR] Using {num_processes} processes for parallel detection")
+            
+            # Prepare arguments for worker function
+            worker_args = [
+                (img_idx, img, self.aruco_params, self.camera_intrinsic, marker_size)
+                for img_idx, img in enumerate(images)
+            ]
+            
             frame_detection_counts = {}
             total_images = len(images)
-            for img_idx, img in enumerate(images):
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                corners, ids, _ = detector.detectMarkers(gray)
-                
-                if ids is not None:
-                    frame_detection_counts[img_idx] = len(ids.flatten())
-                    # Estimate pose for each marker
-                    for i, marker_id in enumerate(ids.flatten()):
-                        marker_corners = corners[i][0]
+            
+            # Use multiprocessing Pool for parallel detection
+            if num_processes > 1 and len(images) > 1:
+                try:
+                    # Use multiprocessing for multiple images
+                    with mp.Pool(processes=num_processes) as pool:
+                        # Process images in batches to update progress
+                        batch_size = max(1, total_images // 20)  # Update progress ~20 times
+                        results = []
                         
-                        # Generate 3D object points
-                        obj_points = np.array([
-                            [-marker_size/2, marker_size/2, 0],
-                            [marker_size/2, marker_size/2, 0],
-                            [marker_size/2, -marker_size/2, 0],
-                            [-marker_size/2, -marker_size/2, 0]
-                        ], dtype=np.float32)
+                        # Use imap_unordered for better progress tracking
+                        for idx, result in enumerate(pool.imap_unordered(_detect_aruco_worker, worker_args)):
+                            results.append(result)
+                            
+                            # Update progress
+                            if (idx + 1) % batch_size == 0 or (idx + 1) == total_images:
+                                self.progress_signal.emit(
+                                    f"Detecting ArUco markers... ({idx + 1}/{total_images})", 
+                                    idx + 1, 
+                                    total_images
+                                )
                         
-                        # Estimate pose
-                        success, rvec, tvec = cv2.solvePnP(
-                            obj_points,
-                            marker_corners,
-                            self.camera_intrinsic,
-                            None
-                        )
+                        # Sort results by image index to maintain order
+                        results.sort(key=lambda x: x[0])
                         
-                        if success:
-                            all_detections.append({
-                                'image_idx': img_idx,
-                                'marker_id': int(marker_id),
-                                'corners': marker_corners,
-                                'rvec': rvec.flatten(),
-                                'tvec': tvec.flatten()
-                            })
-                else:
-                    frame_detection_counts[img_idx] = 0
-                
-                # Update progress every 10 images or at the end
-                if (img_idx + 1) % 10 == 0 or (img_idx + 1) == total_images:
-                    self.progress_signal.emit(f"Detecting ArUco markers... ({img_idx + 1}/{total_images})", img_idx + 1, total_images)
+                        # Collect detections and counts
+                        for img_idx, detections, detection_count in results:
+                            frame_detection_counts[img_idx] = detection_count
+                            all_detections.extend(detections)
+                    
+                    print(f"[ARUCO PROCESSOR] Parallel detection completed successfully")
+                except Exception as e:
+                    # Fallback to sequential processing if multiprocessing fails
+                    print(f"[ARUCO PROCESSOR] WARNING: Multiprocessing failed ({str(e)}), falling back to sequential processing")
+                    num_processes = 1  # Force sequential processing
+            if num_processes == 1 or len(images) == 1:
+                # Fallback to sequential processing for single image or single process
+                print(f"[ARUCO PROCESSOR] Using sequential processing (num_processes={num_processes}, num_images={len(images)})")
+                for img_idx, img in enumerate(images):
+                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                    corners, ids, _ = detector.detectMarkers(gray)
+                    
+                    if ids is not None:
+                        frame_detection_counts[img_idx] = len(ids.flatten())
+                        # Estimate pose for each marker
+                        for i, marker_id in enumerate(ids.flatten()):
+                            marker_corners = corners[i][0]
+                            
+                            # Generate 3D object points
+                            obj_points = np.array([
+                                [-marker_size/2, marker_size/2, 0],
+                                [marker_size/2, marker_size/2, 0],
+                                [marker_size/2, -marker_size/2, 0],
+                                [-marker_size/2, -marker_size/2, 0]
+                            ], dtype=np.float32)
+                            
+                            # Estimate pose
+                            success, rvec, tvec = cv2.solvePnP(
+                                obj_points,
+                                marker_corners,
+                                self.camera_intrinsic,
+                                None
+                            )
+                            
+                            if success:
+                                all_detections.append({
+                                    'image_idx': img_idx,
+                                    'marker_id': int(marker_id),
+                                    'corners': marker_corners,
+                                    'rvec': rvec.flatten(),
+                                    'tvec': tvec.flatten()
+                                })
+                    else:
+                        frame_detection_counts[img_idx] = 0
+                    
+                    # Update progress every 10 images or at the end
+                    if (img_idx + 1) % 10 == 0 or (img_idx + 1) == total_images:
+                        self.progress_signal.emit(f"Detecting ArUco markers... ({img_idx + 1}/{total_images})", img_idx + 1, total_images)
             
             if not all_detections:
                 print(f"[ARUCO PROCESSOR] ERROR: No ArUco markers detected in any image")
