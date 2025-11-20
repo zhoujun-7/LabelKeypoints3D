@@ -15,6 +15,7 @@ import numpy as np
 import cv2
 import tempfile
 from pathlib import Path
+from collections import defaultdict
 from .aruco_processor import ArucoProcessor
 from .labeling_tab import LabelingTab
 from .trajectory_tab import TrajectoryTab
@@ -97,6 +98,7 @@ class MainWindow(QMainWindow):
         self.labeling_tab.keypoint_removed.connect(self.on_keypoint_removed)
         self.labeling_tab.done_clicked.connect(self.on_done_clicked)
         self.labeling_tab.save_label_clicked.connect(self.on_save_label_clicked)
+        self.labeling_tab.save_yolo_clicked.connect(self.on_save_yolo_clicked)
         self.labeling_tab.parameters_ready.connect(self.on_parameters_ready)
         self.labeling_tab.exit_requested.connect(self.on_exit_requested)
         self.tab_widget.addTab(self.labeling_tab, "Labeling")
@@ -1068,6 +1070,272 @@ class MainWindow(QMainWindow):
                                    f"Poses data saved to:\n{output_path}\n\n"
                                    f"No keypoints labeled - only camera poses and ArUco marker poses saved.\n"
                                    f"{copied_count} valid images copied to:\n{valid_dir}")
+    
+    def normalize_coordinates(self, x: float, y: float, img_width: int, img_height: int):
+        """Normalize coordinates to [0, 1] range"""
+        if img_width <= 0 or img_height <= 0:
+            raise ValueError(f"Invalid image dimensions: {img_width}x{img_height}")
+        return x / img_width, y / img_height
+    
+    def calculate_bbox_from_keypoints(self, keypoints_2d):
+        """Calculate bounding box from keypoint coordinates"""
+        if not keypoints_2d:
+            return None
+        xs = [kp[0] for kp in keypoints_2d if len(kp) >= 2]
+        ys = [kp[1] for kp in keypoints_2d if len(kp) >= 2]
+        if not xs or not ys:
+            return None
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        width = x_max - x_min
+        height = y_max - y_min
+        if width <= 0 or height <= 0:
+            return None
+        padding_x = width * 0.01
+        padding_y = height * 0.01
+        return (max(0, x_min - padding_x), max(0, y_min - padding_y), 
+                x_max + padding_x, y_max + padding_y)
+    
+    def on_save_yolo_clicked(self):
+        """Handle Save YOLO pose format button click"""
+        # Check if we have valid data
+        if not self.images or not self.image_paths:
+            QMessageBox.warning(self, "Warning", "No images loaded!")
+            return
+        
+        # Identify valid frames (frames with >2 ArUco markers and camera poses)
+        valid_frame_ids = set()
+        for frame_id in range(len(self.images)):
+            aruco_count = self.frame_aruco_count.get(frame_id, 0)
+            if aruco_count > 2 and frame_id in self.camera_poses:
+                valid_frame_ids.add(frame_id)
+        
+        if not valid_frame_ids:
+            QMessageBox.warning(self, "Warning", "No valid frames found! Make sure frames have >2 ArUco markers.")
+            return
+        
+        # Get input directory name
+        input_dir_path = Path(self.image_dir)
+        input_dir_name = input_dir_path.name
+        
+        # Create output directory
+        output_dir = str(input_dir_path.parent / f"{input_dir_name}_yolo")
+        image_dir = os.path.join(output_dir, "image")
+        label_dir = os.path.join(output_dir, "label")
+        
+        try:
+            os.makedirs(image_dir, exist_ok=True)
+            os.makedirs(label_dir, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            QMessageBox.critical(self, "Error", f"Failed to create output directory: {e}")
+            return
+        
+        self.labeling_tab.log_message(f"Converting to YOLO format...")
+        self.labeling_tab.log_message(f"Output directory: {output_dir}")
+        
+        # Process valid frames
+        processed_count = 0
+        skipped_count = 0
+        
+        for frame_id in sorted(valid_frame_ids):
+            if frame_id >= len(self.images) or frame_id >= len(self.image_paths):
+                skipped_count += 1
+                continue
+            
+            # Get image dimensions
+            img = self.images[frame_id]
+            img_height, img_width = img.shape[:2]
+            
+            # Collect keypoints for this frame grouped by object_id
+            objects_keypoints = defaultdict(list)  # {object_id: [(keypoint_id, x, y, cls_id, visibility)]}
+            
+            # Collect user-labeled keypoints
+            if frame_id in self.labeling_data:
+                visible_objects = {}
+                for object_id, keypoints in self.labeling_data[frame_id].items():
+                    # Check visibility
+                    if self.labeling_tab.check_visibility_checkbox.isChecked():
+                        if object_id not in visible_objects:
+                            visible_objects[object_id] = self.labeling_tab.check_object_visibility(frame_id, object_id)
+                    else:
+                        visible_objects[object_id] = True
+                    
+                    if not visible_objects[object_id]:
+                        continue
+                    
+                    for keypoint_id, data in keypoints.items():
+                        if data.get('2d') is not None:
+                            x, y = data['2d']
+                            cls_id = data.get('cls_id', 1)
+                            visibility = data.get('visibility', True)
+                            visibility_int = 1 if visibility else 0
+                            objects_keypoints[object_id].append((keypoint_id, x, y, cls_id, visibility_int))
+            
+            # Collect calculated keypoints (triangulated)
+            if frame_id in self.labeling_tab.calculated_2d:
+                visible_objects = {}
+                for object_id, keypoints in self.labeling_tab.calculated_2d[frame_id].items():
+                    # Skip if already user-labeled
+                    is_user_labeled = (frame_id in self.labeling_data and 
+                                      object_id in self.labeling_data[frame_id])
+                    
+                    if is_user_labeled:
+                        continue
+                    
+                    # Check visibility
+                    if self.labeling_tab.check_visibility_checkbox.isChecked():
+                        if object_id not in visible_objects:
+                            visible_objects[object_id] = self.labeling_tab.check_object_visibility(frame_id, object_id)
+                    else:
+                        visible_objects[object_id] = True
+                    
+                    if not visible_objects[object_id]:
+                        continue
+                    
+                    for keypoint_id, point_2d in keypoints.items():
+                        # Skip if user-labeled
+                        if (is_user_labeled and keypoint_id in self.labeling_data[frame_id][object_id]):
+                            continue
+                        
+                        x, y = point_2d
+                        # Get cls_id from any user-labeled keypoint with same object_id and keypoint_id
+                        cls_id = 1  # Default
+                        for f_id, objs in self.labeling_data.items():
+                            if object_id in objs and keypoint_id in objs[object_id]:
+                                cls_id = objs[object_id][keypoint_id].get('cls_id', 1)
+                                break
+                        
+                        # Get visibility from calculated_visibility if available
+                        visibility_key = (frame_id, object_id, keypoint_id)
+                        if (hasattr(self.labeling_tab, 'calculated_visibility') and 
+                            self.labeling_tab.calculated_visibility and 
+                            visibility_key in self.labeling_tab.calculated_visibility):
+                            visibility = self.labeling_tab.calculated_visibility[visibility_key]
+                            visibility_int = 1 if visibility else 0
+                        else:
+                            visibility_int = 1  # Default to visible
+                        
+                        objects_keypoints[object_id].append((keypoint_id, x, y, cls_id, visibility_int))
+            
+            # Create YOLO format label file (create even if empty, but skip writing if no keypoints)
+            label_lines = []
+            
+            for object_id, keypoints_list in objects_keypoints.items():
+                # Sort keypoints by keypoint_id
+                keypoints_list.sort(key=lambda x: x[0])
+                
+                if not keypoints_list:
+                    continue
+                
+                # Get class ID for this object
+                # Tuple format: (keypoint_id, x, y, cls_id, visibility_int)
+                # Use cls_id from first keypoint, but prefer user-labeled keypoints if available
+                cls_id = keypoints_list[0][3]  # cls_id is at index 3
+                
+                # If available, try to get cls_id from user-labeled keypoints for better accuracy
+                if frame_id in self.labeling_data and object_id in self.labeling_data[frame_id]:
+                    # Get cls_id from any user-labeled keypoint in this object
+                    for kp_id, data in self.labeling_data[frame_id][object_id].items():
+                        if data.get('2d') is not None and 'cls_id' in data:
+                            cls_id = data.get('cls_id', cls_id)
+                            break  # Use first found user-labeled keypoint's cls_id
+                
+                class_index = cls_id - 1  # YOLO uses 0-indexed classes
+                
+                # Extract 2D coordinates and visibility
+                keypoints_2d = []
+                keypoints_visibility = []
+                for kp_id, x, y, _, visibility in keypoints_list:
+                    keypoints_2d.append([float(x), float(y)])
+                    keypoints_visibility.append(visibility)
+                
+                # Calculate bounding box
+                bbox = self.calculate_bbox_from_keypoints(keypoints_2d)
+                if bbox is None:
+                    continue
+                
+                x_min, y_min, x_max, y_max = bbox
+                
+                # Calculate normalized bbox center and size
+                bbox_center_x = (x_min + x_max) / 2.0
+                bbox_center_y = (y_min + y_max) / 2.0
+                bbox_width = x_max - x_min
+                bbox_height = y_max - y_min
+                
+                # Normalize bbox coordinates
+                try:
+                    norm_center_x, norm_center_y = self.normalize_coordinates(
+                        bbox_center_x, bbox_center_y, img_width, img_height
+                    )
+                    norm_width = bbox_width / img_width
+                    norm_height = bbox_height / img_height
+                except ValueError:
+                    continue
+                
+                # Normalize keypoint coordinates
+                normalized_keypoints = []
+                for idx, kp_2d in enumerate(keypoints_2d):
+                    try:
+                        norm_x, norm_y = self.normalize_coordinates(
+                            kp_2d[0], kp_2d[1], img_width, img_height
+                        )
+                        # Clamp to [0, 1] range
+                        norm_x = max(0.0, min(1.0, norm_x))
+                        norm_y = max(0.0, min(1.0, norm_y))
+                        normalized_keypoints.append(norm_x)
+                        normalized_keypoints.append(norm_y)
+                        visibility = keypoints_visibility[idx] if idx < len(keypoints_visibility) else 1
+                        normalized_keypoints.append(visibility)
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        continue
+                
+                # Format: <class-index> <x> <y> <width> <height> <px1> <py1> <p1-visibility> ...
+                line_parts = [
+                    str(class_index),
+                    f"{norm_center_x:.6f}",
+                    f"{norm_center_y:.6f}",
+                    f"{norm_width:.6f}",
+                    f"{norm_height:.6f}"
+                ]
+                
+                # Add keypoints
+                for i in range(0, len(normalized_keypoints), 3):
+                    line_parts.append(f"{normalized_keypoints[i]:.6f}")
+                    line_parts.append(f"{normalized_keypoints[i+1]:.6f}")
+                    line_parts.append(f"{normalized_keypoints[i+2]:.0f}")
+                
+                label_lines.append(" ".join(line_parts))
+            
+            # Write label file only if there are keypoints (only valid labels)
+            if label_lines:
+                label_filename = f"{input_dir_name}_{frame_id}.txt"
+                label_path = os.path.join(label_dir, label_filename)
+                image_filename = f"{input_dir_name}_{frame_id}.jpg"
+                image_path = os.path.join(image_dir, image_filename)
+                try:
+                    # Write label file
+                    with open(label_path, 'w', encoding='utf-8') as f:
+                        f.write("\n".join(label_lines))
+                    
+                    # Copy image (only if there are labels)
+                    cv2.imwrite(image_path, img)
+                    
+                    processed_count += 1
+                except (PermissionError, OSError) as e:
+                    self.labeling_tab.log_message(f"Error writing files for frame {frame_id}: {e}")
+                    skipped_count += 1
+            else:
+                skipped_count += 1
+        
+        self.labeling_tab.log_message(f"YOLO format conversion complete!")
+        self.labeling_tab.log_message(f"  Processed: {processed_count} frames")
+        self.labeling_tab.log_message(f"  Skipped: {skipped_count} frames")
+        self.labeling_tab.log_message(f"  Output directory: {output_dir}")
+        
+        QMessageBox.information(self, "Success",
+                               f"YOLO format saved to:\n{output_dir}\n\n"
+                               f"Processed: {processed_count} frames\n"
+                               f"Skipped: {skipped_count} frames")
     
     def on_exit_requested(self):
         """Handle exit request - check if data has been saved"""

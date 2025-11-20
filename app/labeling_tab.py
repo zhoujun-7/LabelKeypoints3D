@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                 QGridLayout, QSplitter, QSizePolicy, QSpinBox,
                                 QDialog, QDialogButtonBox, QCheckBox)
 from PySide6.QtCore import Qt, Signal, QSize, QPoint
-from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QKeyEvent, QFont
+from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QKeyEvent, QFont, QPolygon
 import numpy as np
 import cv2
 import os
@@ -120,9 +120,9 @@ class ImageLabel(QWidget):
         # Trigger repaint to update scaled image
         self.update()
     
-    def add_keypoint(self, x, y, object_id, keypoint_id, frame_id, is_calculated=False):
+    def add_keypoint(self, x, y, object_id, keypoint_id, frame_id, is_calculated=False, cls_id=1):
         """Add keypoint to display. is_calculated=True for triangulated keypoints"""
-        self.keypoints.append((x, y, object_id, keypoint_id, frame_id, is_calculated))
+        self.keypoints.append((x, y, object_id, keypoint_id, frame_id, is_calculated, cls_id))
         self.update()
     
     def clear_keypoints(self):
@@ -165,15 +165,20 @@ class ImageLabel(QWidget):
         
         # Group keypoints by object_id for current frame (for drawing connections)
         keypoints_by_object = {}  # {object_id: {keypoint_id: (wx, wy)}}
+        cls_ids_by_object = {}  # {object_id: cls_id} - store cls_id for each object
         
         # First pass: collect keypoints and convert to widget coordinates
         for kp_data in self.keypoints:
-            if len(kp_data) == 6:
+            if len(kp_data) == 7:
+                x, y, obj_id, kp_id, frame_id, is_calculated, cls_id = kp_data
+            elif len(kp_data) == 6:
                 x, y, obj_id, kp_id, frame_id, is_calculated = kp_data
+                cls_id = 1  # Default cls_id for backward compatibility
             else:
                 # Backward compatibility
                 x, y, obj_id, kp_id, frame_id = kp_data
                 is_calculated = False
+                cls_id = 1  # Default cls_id
             
             # Only process keypoints in current frame
             if frame_id == self.current_frame_id:
@@ -185,6 +190,28 @@ class ImageLabel(QWidget):
                 if obj_id not in keypoints_by_object:
                     keypoints_by_object[obj_id] = {}
                 keypoints_by_object[obj_id][kp_id] = (wx, wy)
+                # Store cls_id for this object (use the first one we encounter)
+                if obj_id not in cls_ids_by_object:
+                    cls_ids_by_object[obj_id] = cls_id
+        
+        # Draw filled polygon for objects with more than 2 keypoints (before drawing lines)
+        very_light_red = QColor(255, 200, 200, 50)  # Very light red with transparency
+        
+        for obj_id, kp_dict in keypoints_by_object.items():
+            num_keypoints = len(kp_dict)
+            if num_keypoints > 2:
+                # Sort keypoints by keypoint_id to get ordered polygon points
+                sorted_kp_ids = sorted(kp_dict.keys())
+                polygon_points = []
+                for kp_id in sorted_kp_ids:
+                    wx, wy = kp_dict[kp_id]
+                    polygon_points.append(QPoint(wx, wy))
+                
+                # Draw filled polygon
+                polygon = QPolygon(polygon_points)
+                painter.setPen(QPen(QColor(255, 200, 200, 100), 1))  # Light red border
+                painter.setBrush(very_light_red)
+                painter.drawPolygon(polygon)
         
         # Draw lines connecting keypoints for each object (before drawing keypoints)
         # Use light green color
@@ -211,9 +238,40 @@ class ImageLabel(QWidget):
                 point_first = kp_dict[first_kp_id]
                 painter.drawLine(point_max[0], point_max[1], point_first[0], point_first[1])
         
+        # Draw class ID at average keypoint location for each object
+        for obj_id, kp_dict in keypoints_by_object.items():
+            # Calculate average position of keypoints
+            if kp_dict:
+                avg_x = sum(wx for wx, wy in kp_dict.values()) / len(kp_dict)
+                avg_y = sum(wy for wx, wy in kp_dict.values()) / len(kp_dict)
+                
+                # Get cls_id for this object
+                cls_id = cls_ids_by_object.get(obj_id, 1)
+                
+                # Draw class ID text
+                painter.setFont(QFont("Arial", 12, QFont.Bold))
+                text = str(cls_id)
+                # Calculate text bounding rect for centering
+                text_rect = painter.fontMetrics().boundingRect(text)
+                # Create background rectangle with padding
+                bg_rect = text_rect.adjusted(-3, -2, 3, 2)
+                # Center the rectangle at average position
+                bg_x = int(avg_x) - bg_rect.width() // 2
+                bg_y = int(avg_y) - bg_rect.height() // 2
+                bg_rect.moveTo(bg_x, bg_y)
+                # Draw semi-transparent black background
+                painter.fillRect(bg_rect, QColor(0, 0, 0, 180))
+                # Draw text in yellow, centered
+                painter.setPen(QPen(QColor(255, 255, 0), 1))  # Yellow text
+                text_x = int(avg_x) - text_rect.width() // 2
+                text_y = int(avg_y) + text_rect.height() // 2 - painter.fontMetrics().descent()
+                painter.drawText(text_x, text_y, text)
+        
         # Draw keypoints
         for kp_data in self.keypoints:
-            if len(kp_data) == 6:
+            if len(kp_data) == 7:
+                x, y, obj_id, kp_id, frame_id, is_calculated, cls_id = kp_data
+            elif len(kp_data) == 6:
                 x, y, obj_id, kp_id, frame_id, is_calculated = kp_data
             else:
                 # Backward compatibility
@@ -369,7 +427,9 @@ class ImageLabel(QWidget):
         closest_kp = None
         
         for kp in self.keypoints:
-            if len(kp) == 6:
+            if len(kp) == 7:
+                kp_x, kp_y, obj_id, kp_id, frame_id, is_calculated, cls_id = kp
+            elif len(kp) == 6:
                 kp_x, kp_y, obj_id, kp_id, frame_id, is_calculated = kp
             else:
                 kp_x, kp_y, obj_id, kp_id, frame_id = kp
@@ -383,7 +443,9 @@ class ImageLabel(QWidget):
                     closest_kp = kp
         
         if closest_kp:
-            if len(closest_kp) == 6:
+            if len(closest_kp) == 7:
+                kp_x, kp_y, obj_id, kp_id, frame_id, is_calculated, cls_id = closest_kp
+            elif len(closest_kp) == 6:
                 kp_x, kp_y, obj_id, kp_id, frame_id, is_calculated = closest_kp
             else:
                 kp_x, kp_y, obj_id, kp_id, frame_id = closest_kp
@@ -400,6 +462,7 @@ class LabelingTab(QWidget):
     keypoint_removed = Signal(int, int, int, int, int, bool)  # frame_id, object_id, keypoint_id, x, y, is_calculated
     done_clicked = Signal()
     save_label_clicked = Signal()  # Signal for save label
+    save_yolo_clicked = Signal()  # Signal for save YOLO format
     parameters_ready = Signal(dict)  # Signal for parameters
     exit_requested = Signal()  # Signal for exit request
     
@@ -490,6 +553,12 @@ class LabelingTab(QWidget):
         self.save_label_btn.clicked.connect(self.on_save_label_clicked)
         self.save_label_btn.setEnabled(False)  # Disabled until labeling is ready
         id_layout.addWidget(self.save_label_btn)
+        
+        # Save YOLO pose format button
+        self.save_yolo_btn = QPushButton("Save YOLO pose format")
+        self.save_yolo_btn.clicked.connect(self.on_save_yolo_clicked)
+        self.save_yolo_btn.setEnabled(False)  # Disabled until labeling is ready
+        id_layout.addWidget(self.save_yolo_btn)
         
         id_group.setLayout(id_layout)
         left_input_layout.addWidget(id_group)
@@ -930,6 +999,7 @@ class LabelingTab(QWidget):
         # Enable labeling controls
         self.calc_triangulation_btn.setEnabled(True)
         self.save_label_btn.setEnabled(True)
+        self.save_yolo_btn.setEnabled(True)
         
         # Setup timeline
         self.timeline_slider.setMaximum(len(images) - 1)
@@ -1059,6 +1129,10 @@ class LabelingTab(QWidget):
         """Handle Save Label button click"""
         self.save_label_clicked.emit()
     
+    def on_save_yolo_clicked(self):
+        """Handle Save YOLO pose format button click"""
+        self.save_yolo_clicked.emit()
+    
     def on_exit_clicked(self):
         """Handle Exit button click"""
         self.exit_requested.emit()
@@ -1118,7 +1192,8 @@ class LabelingTab(QWidget):
                     for kp_id, data in keypoints.items():
                         if data.get('2d') is not None:
                             x, y = data['2d']
-                            keypoints_to_show.append((x, y, obj_id, kp_id, frame_id, False))
+                            cls_id = data.get('cls_id', 1)  # Get cls_id, default to 1
+                            keypoints_to_show.append((x, y, obj_id, kp_id, frame_id, False, cls_id))
                             user_labeled_count += 1
                             print(f"[DISPLAY]   User-labeled: Object {obj_id}, Keypoint {kp_id} at ({x:.2f}, {y:.2f})")
         
@@ -1138,7 +1213,15 @@ class LabelingTab(QWidget):
                         
                         if not is_user_labeled:
                             x, y = point_2d
-                            keypoints_to_show.append((x, y, obj_id, kp_id, frame_id, True))
+                            # Try to get cls_id from labeling_data if available, otherwise default to 1
+                            cls_id = 1
+                            if (frame_id in self.labeling_data and 
+                                obj_id in self.labeling_data[frame_id]):
+                                # Get cls_id from any keypoint of this object in this frame
+                                for kp_id_temp, data_temp in self.labeling_data[frame_id][obj_id].items():
+                                    cls_id = data_temp.get('cls_id', 1)
+                                    break  # Use first available cls_id
+                            keypoints_to_show.append((x, y, obj_id, kp_id, frame_id, True, cls_id))
                             calc_count += 1
                             print(f"[DISPLAY]   Calculated: Object {obj_id}, Keypoint {kp_id} at ({x:.2f}, {y:.2f})")
         
@@ -1314,7 +1397,7 @@ class LabelingTab(QWidget):
         self.keypoint_labeled.emit(self.current_frame, object_id, keypoint_id, [x, y], cls_id)
         
         # Update display
-        self.image_label.add_keypoint(x, y, object_id, keypoint_id, self.current_frame, is_calculated=False)
+        self.image_label.add_keypoint(x, y, object_id, keypoint_id, self.current_frame, is_calculated=False, cls_id=cls_id)
         self.image_label.set_current_keypoint(None, None)  # Clear current keypoint
         
         print(f"[LABELING] Frame {self.current_frame}: Labeled Object {object_id}, Keypoint {keypoint_id} at ({x}, {y})")
@@ -1673,6 +1756,7 @@ class LabelingTab(QWidget):
         self.frame_label.setText("Frame: 0 / 0")
         self.calc_triangulation_btn.setEnabled(False)
         self.save_label_btn.setEnabled(False)
+        self.save_yolo_btn.setEnabled(False)
         self.object_id_spin.setValue(1)
         self.keypoint_id_spin.setValue(1)
         self.cls_id_spin.setValue(1)
