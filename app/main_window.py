@@ -26,9 +26,11 @@ try:
     import default_cfg
     RECOMMEND_IMAGE_NUM = default_cfg.recommend_image_num
     DEFAULT_DOWNSAMPLE_RATIO = default_cfg.downsample_ratio
+    MAX_KEYPOINT_NUM = default_cfg.max_keypoint_num
 except ImportError:
     RECOMMEND_IMAGE_NUM = 200  # Fallback default
     DEFAULT_DOWNSAMPLE_RATIO = 15  # Fallback default
+    MAX_KEYPOINT_NUM = 4  # Fallback default
 
 # Import utilities
 try:
@@ -1223,16 +1225,16 @@ class MainWindow(QMainWindow):
             label_lines = []
             
             for object_id, keypoints_list in objects_keypoints.items():
-                # Sort keypoints by keypoint_id
-                keypoints_list.sort(key=lambda x: x[0])
+                # Convert keypoints_list to a dictionary for easier lookup
+                # Tuple format: (keypoint_id, x, y, cls_id, visibility_int)
+                keypoints_dict = {kp_id: (x, y, cls_id, visibility) for kp_id, x, y, cls_id, visibility in keypoints_list}
                 
-                if not keypoints_list:
+                if not keypoints_dict:
                     continue
                 
                 # Get class ID for this object
-                # Tuple format: (keypoint_id, x, y, cls_id, visibility_int)
                 # Use cls_id from first keypoint, but prefer user-labeled keypoints if available
-                cls_id = keypoints_list[0][3]  # cls_id is at index 3
+                cls_id = next(iter(keypoints_dict.values()))[2]  # cls_id is at index 2 in tuple
                 
                 # If available, try to get cls_id from user-labeled keypoints for better accuracy
                 if frame_id in self.labeling_data and object_id in self.labeling_data[frame_id]:
@@ -1244,15 +1246,26 @@ class MainWindow(QMainWindow):
                 
                 class_index = cls_id - 1  # YOLO uses 0-indexed classes
                 
-                # Extract 2D coordinates and visibility
+                # Extract 2D coordinates and visibility, filling missing keypoints with (0, 0, 0)
+                # Keypoints must be in order from 1 to MAX_KEYPOINT_NUM
                 keypoints_2d = []
                 keypoints_visibility = []
-                for kp_id, x, y, _, visibility in keypoints_list:
-                    keypoints_2d.append([float(x), float(y)])
-                    keypoints_visibility.append(visibility)
+                for kp_id in range(1, MAX_KEYPOINT_NUM + 1):
+                    if kp_id in keypoints_dict:
+                        x, y, _, visibility = keypoints_dict[kp_id]
+                        keypoints_2d.append([float(x), float(y)])
+                        keypoints_visibility.append(visibility)
+                    else:
+                        # Fill missing keypoint with (0, 0, 0)
+                        keypoints_2d.append([0.0, 0.0])
+                        keypoints_visibility.append(0)
                 
-                # Calculate bounding box
-                bbox = self.calculate_bbox_from_keypoints(keypoints_2d)
+                # Calculate bounding box (only from non-zero keypoints)
+                non_zero_keypoints = [kp for kp in keypoints_2d if kp[0] != 0.0 or kp[1] != 0.0]
+                if not non_zero_keypoints:
+                    continue
+                
+                bbox = self.calculate_bbox_from_keypoints(non_zero_keypoints)
                 if bbox is None:
                     continue
                 
@@ -1274,22 +1287,31 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     continue
                 
-                # Normalize keypoint coordinates
+                # Normalize keypoint coordinates (all keypoints from 1 to MAX_KEYPOINT_NUM)
                 normalized_keypoints = []
                 for idx, kp_2d in enumerate(keypoints_2d):
                     try:
-                        norm_x, norm_y = self.normalize_coordinates(
-                            kp_2d[0], kp_2d[1], img_width, img_height
-                        )
-                        # Clamp to [0, 1] range
-                        norm_x = max(0.0, min(1.0, norm_x))
-                        norm_y = max(0.0, min(1.0, norm_y))
-                        normalized_keypoints.append(norm_x)
-                        normalized_keypoints.append(norm_y)
-                        visibility = keypoints_visibility[idx] if idx < len(keypoints_visibility) else 1
-                        normalized_keypoints.append(visibility)
+                        # For missing keypoints (0, 0), keep them as (0, 0, 0)
+                        if kp_2d[0] == 0.0 and kp_2d[1] == 0.0:
+                            normalized_keypoints.append(0.0)
+                            normalized_keypoints.append(0.0)
+                            normalized_keypoints.append(0)
+                        else:
+                            norm_x, norm_y = self.normalize_coordinates(
+                                kp_2d[0], kp_2d[1], img_width, img_height
+                            )
+                            # Clamp to [0, 1] range
+                            norm_x = max(0.0, min(1.0, norm_x))
+                            norm_y = max(0.0, min(1.0, norm_y))
+                            normalized_keypoints.append(norm_x)
+                            normalized_keypoints.append(norm_y)
+                            visibility = keypoints_visibility[idx] if idx < len(keypoints_visibility) else 0
+                            normalized_keypoints.append(visibility)
                     except (ValueError, TypeError, ZeroDivisionError):
-                        continue
+                        # If normalization fails, fill with (0, 0, 0)
+                        normalized_keypoints.append(0.0)
+                        normalized_keypoints.append(0.0)
+                        normalized_keypoints.append(0)
                 
                 # Format: <class-index> <x> <y> <width> <height> <px1> <py1> <p1-visibility> ...
                 line_parts = [
@@ -1300,7 +1322,7 @@ class MainWindow(QMainWindow):
                     f"{norm_height:.6f}"
                 ]
                 
-                # Add keypoints
+                # Add keypoints (all keypoints from 1 to MAX_KEYPOINT_NUM in order)
                 for i in range(0, len(normalized_keypoints), 3):
                     line_parts.append(f"{normalized_keypoints[i]:.6f}")
                     line_parts.append(f"{normalized_keypoints[i+1]:.6f}")
