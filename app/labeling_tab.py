@@ -507,7 +507,7 @@ class LabelingTab(QWidget):
         left_input_layout.setContentsMargins(0, 0, 0, 0)
         
         # Object and keypoint ID input
-        id_group = QGroupBox("Keypoint Information")
+        id_group = QGroupBox("")
         id_layout = QVBoxLayout()
         
         id_layout.addWidget(QLabel("Object ID:"))
@@ -602,7 +602,7 @@ class LabelingTab(QWidget):
         image_layout.addWidget(self.image_label, 1)  # Stretch factor 1
         
         # Timeline slider
-        timeline_group = QGroupBox("Timeline")
+        timeline_group = QGroupBox("")
         timeline_layout = QVBoxLayout()
         self.timeline_slider = QSlider(Qt.Horizontal)
         self.timeline_slider.setMinimum(0)
@@ -630,7 +630,7 @@ class LabelingTab(QWidget):
         info_layout.setContentsMargins(0, 0, 0, 0)
         
         # Log area
-        log_group = QGroupBox("Log")
+        log_group = QGroupBox("")
         log_layout = QVBoxLayout()
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -655,10 +655,10 @@ class LabelingTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         
         # Image directory selection
-        dir_group = QGroupBox("Image Directory / Video File")
+        dir_group = QGroupBox("")
         dir_layout = QVBoxLayout()
         self.dir_edit = QLineEdit()
-        self.dir_edit.setPlaceholderText("Select directory containing images or video file...")
+        self.dir_edit.setPlaceholderText("Path to video or directory")
         dir_layout.addWidget(self.dir_edit)
         
         # Two separate buttons for video and directory
@@ -675,7 +675,7 @@ class LabelingTab(QWidget):
         layout.addWidget(dir_group)
         
         # ArUco parameters
-        aruco_group = QGroupBox("ArUco Marker Parameters (Optional)")
+        aruco_group = QGroupBox("")
         aruco_layout = QGridLayout()
         
         # ArUco size selection
@@ -699,7 +699,7 @@ class LabelingTab(QWidget):
         layout.addWidget(aruco_group)
         
         # Camera intrinsic (optional)
-        camera_group = QGroupBox("Camera Intrinsic (Optional)")
+        camera_group = QGroupBox("")
         camera_layout = QGridLayout()
         
         camera_layout.addWidget(QLabel("fx:"), 0, 0)
@@ -730,10 +730,10 @@ class LabelingTab(QWidget):
         layout.addWidget(camera_group)
         
         # JSON file path (optional, for continuing labeling)
-        json_group = QGroupBox("Previous Labeling File (Optional)")
+        json_group = QGroupBox("")
         json_layout = QHBoxLayout()
         self.json_edit = QLineEdit()
-        self.json_edit.setPlaceholderText("Select JSON file to continue labeling...")
+        self.json_edit.setPlaceholderText("Optional: previous label json file")
         json_browse_btn = QPushButton("Browse...")
         json_browse_btn.clicked.connect(self.browse_json)
         json_layout.addWidget(self.json_edit)

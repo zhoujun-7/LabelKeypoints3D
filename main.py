@@ -20,20 +20,36 @@ def main():
         QTabWidget::pane {
             border: 1px solid #3c3c3c;
             background-color: #1e1e1e;
+            top: -1px;
+        }
+        QTabWidget {
+            background-color: #1e1e1e;
+        }
+        QTabBar {
+            background-color: #1e1e1e;
+            border-bottom: 1px solid #3c3c3c;
         }
         QTabBar::tab {
             background-color: #2d2d2d;
-            color: #cccccc;
-            padding: 8px 16px;
-            border: 1px solid #3c3c3c;
-            border-bottom: none;
+            color: #969696;
+            padding: 6px 16px 8px 16px;
+            margin-right: 2px;
+            border: none;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            min-width: 80px;
         }
         QTabBar::tab:selected {
             background-color: #1e1e1e;
+            color: #cccccc;
             border-bottom: 2px solid #007acc;
         }
-        QTabBar::tab:hover {
+        QTabBar::tab:hover:!selected {
             background-color: #2d2d2d;
+            color: #cccccc;
+        }
+        QTabBar::tab:first {
+            margin-left: 0px;
         }
         QPushButton {
             background-color: #0e639c;
@@ -115,6 +131,62 @@ def main():
         }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
             height: 0px;
+        }
+        QGroupBox {
+            border: 1px solid #3c3c3c;
+            border-radius: 3px;
+            margin-top: 8px;
+            padding-top: 8px;
+            background-color: #252526;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            padding: 0 4px;
+            color: #cccccc;
+        }
+        QCheckBox {
+            color: #cccccc;
+            spacing: 6px;
+        }
+        QCheckBox::indicator {
+            width: 16px;
+            height: 16px;
+            background-color: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 3px;
+        }
+        QCheckBox::indicator:hover {
+            border: 1px solid #007acc;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #007acc;
+            border: 1px solid #007acc;
+        }
+        QCheckBox::indicator:checked:hover {
+            background-color: #1177bb;
+            border: 1px solid #1177bb;
+        }
+        QSpinBox {
+            background-color: #252526;
+            color: #cccccc;
+            border: 1px solid #3c3c3c;
+            padding: 4px;
+            border-radius: 2px;
+        }
+        QSpinBox:hover {
+            border: 1px solid #007acc;
+        }
+        QSpinBox:focus {
+            border: 1px solid #007acc;
+        }
+        QSpinBox::up-button, QSpinBox::down-button {
+            background-color: #2d2d2d;
+            border: none;
+            border-radius: 2px;
+        }
+        QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+            background-color: #3c3c3c;
         }
     """)
     

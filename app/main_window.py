@@ -11,6 +11,7 @@ import os
 import sys
 import json
 import shutil
+import re
 import numpy as np
 import cv2
 import tempfile
@@ -464,7 +465,15 @@ class MainWindow(QMainWindow):
             
             # Format label text as "Task Name: current / total" if we have valid values
             if total > 0:
-                label_text = f"{task_name}: {current} / {total}"
+                # Extract reprojection error from message if it's bundle adjustment optimization
+                error_text = ""
+                if message and ("error" in message.lower() or "optimizing" in message.lower()):
+                    # Try to extract error value from message (format: "...error = X.XX pixels")
+                    error_match = re.search(r'error\s*=\s*([\d.]+)\s*pixels', message, re.IGNORECASE)
+                    if error_match:
+                        error_value = float(error_match.group(1))
+                        error_text = f" (error: {error_value:.2f} px)"
+                label_text = f"{task_name}: {current} / {total}{error_text}"
                 self.progress_dialog.setLabelText(label_text)
                 # Update progress bar
                 progress_pct = int(100 * current / total)

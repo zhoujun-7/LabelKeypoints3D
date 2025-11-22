@@ -869,7 +869,7 @@ class BundleAdjustment:
                 mean_error = reprojection_error.sum() / (mask_expanded.sum() * n_corners + 1e-8)
                 mean_error = mean_error.item()
                 progress_pct = int(100 * (iter_idx + 1) / max_iterations)
-                log_msg = f"Optimizing... Iter {iter_idx+1}/{max_iterations} ({progress_pct}%): error = {mean_error:.4f} pixels"
+                log_msg = f"Optimizing... Iter {iter_idx+1}/{max_iterations} ({progress_pct}%): error = {mean_error:.2f} pixels"
                 print(f"[NO-BA2] Iter {iter_idx+1}/{max_iterations}: mean reprojection error = {mean_error:.4f} pixels")
                 if self.progress_callback:
                     self.progress_callback(log_msg, iter_idx + 1, max_iterations)
