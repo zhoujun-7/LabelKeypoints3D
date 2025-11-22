@@ -158,7 +158,7 @@ class ArucoProcessor(QThread):
             print(f"[ARUCO PROCESSOR] ArUco parameters: {self.aruco_params}")
             print(f"[ARUCO PROCESSOR] Camera intrinsic provided: {self.camera_intrinsic is not None}")
             
-            # Load images
+            # Load images using parallel processing
             self.progress_signal.emit("Loading images...", 0, 0)
             image_paths = sorted(glob.glob(os.path.join(self.image_dir, "*.jpg")) +
                                 glob.glob(os.path.join(self.image_dir, "*.png")) +
@@ -171,22 +171,21 @@ class ArucoProcessor(QThread):
             
             print(f"[ARUCO PROCESSOR] Found {len(image_paths)} image files")
             
-            images = []
-            total_images = len(image_paths)
-            for idx, path in enumerate(image_paths):
-                img = cv2.imread(path)
-                if img is not None:
-                    images.append(img)
-                # Update progress every 10 images or at the end
-                if (idx + 1) % 10 == 0 or (idx + 1) == total_images:
-                    self.progress_signal.emit(f"Loading images... ({idx + 1}/{total_images})", idx + 1, total_images)
+            # Use parallel image loading from utils
+            from .utils import load_images_parallel
+            
+            def progress_callback(message, current, total):
+                """Wrapper to emit progress signals"""
+                self.progress_signal.emit(message, current, total)
+            
+            images, image_paths = load_images_parallel(image_paths, num_workers=None, progress_callback=progress_callback, return_paths=True)
             
             if not images:
                 print(f"[ARUCO PROCESSOR] ERROR: Failed to load images")
                 self.finished_signal.emit({'success': False, 'error': 'Failed to load images'})
                 return
             
-            print(f"[ARUCO PROCESSOR] Successfully loaded {len(images)} images")
+            print(f"[ARUCO PROCESSOR] Successfully loaded {len(images)} images using multiprocessing")
             self.progress_signal.emit(f"Loaded {len(images)} images", len(images), len(images))
             
             # Initialize ArUco detector with improved parameters to suppress false positives

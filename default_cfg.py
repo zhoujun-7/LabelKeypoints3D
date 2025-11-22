@@ -49,6 +49,7 @@ visibility_threshold = 85.0  # degrees - angle threshold for object visibility (
 # PyTorch bundle adjustment parameters
 ba_learning_rate = 1e-3  # Learning rate for PyTorch bundle adjustment optimization
 ba_max_iterations = 1000  # Maximum number of iterations for PyTorch bundle adjustment
+ba_decay_rate = 0.998  # Decay rate for PyTorch bundle adjustment optimization
 
 # Reprojection error filtering parameters
 reprojection_error_threshold = 10.0  # Maximum average reprojection error per frame (in pixels). Frames with higher error will be filtered out.

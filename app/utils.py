@@ -5,9 +5,11 @@ Utility functions for safe operations, path validation, and common tasks
 import os
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Union
 import numpy as np
 import cv2
+from functools import partial
+from multiprocessing import Pool, cpu_count
 
 
 def safe_join_path(base_dir: str, filename: str) -> Path:
@@ -269,4 +271,87 @@ try:
     from .constants import MAX_IMAGE_DIMENSION
 except ImportError:
     MAX_IMAGE_DIMENSION = 100000  # Fallback
+
+
+def _load_single_image(path_and_idx: Tuple[str, int]) -> Tuple[int, Optional[np.ndarray]]:
+    """
+    Helper function to load a single image from a path.
+    Used for multiprocessing.
+    
+    Args:
+        path_and_idx: Tuple of (image_path, index)
+    
+    Returns:
+        Tuple of (index, image_array or None)
+    """
+    path, idx = path_and_idx
+    try:
+        img = cv2.imread(path)
+        return (idx, img)
+    except Exception as e:
+        print(f"Warning: Failed to load image {path}: {e}")
+        return (idx, None)
+
+
+def load_images_parallel(image_paths: List[str], num_workers: Optional[int] = None,
+                        progress_callback: Optional[callable] = None, return_paths: bool = False) -> Union[List[np.ndarray], Tuple[List[np.ndarray], List[str]]]:
+    """
+    Load images in parallel using multiprocessing.
+    
+    Args:
+        image_paths: List of image file paths
+        num_workers: Number of worker processes. If None, uses cpu_count()
+        progress_callback: Optional callback function for progress updates.
+                          Called as progress_callback(message, current, total)
+        return_paths: If True, return tuple of (images, valid_image_paths) to maintain correspondence
+    
+    Returns:
+        If return_paths=False: List of loaded images (numpy arrays), preserving order based on input paths
+        If return_paths=True: Tuple of (images, valid_image_paths) where valid_image_paths correspond to successfully loaded images
+    """
+    if not image_paths:
+        return [] if not return_paths else ([], [])
+    
+    # Determine number of workers
+    if num_workers is None:
+        num_workers = max(1, cpu_count())
+    
+    # Limit workers to reasonable number (avoid too many workers for small datasets)
+    num_workers = min(num_workers, len(image_paths), cpu_count())
+    
+    # Prepare paths with indices for preserving order
+    paths_with_indices = [(path, idx) for idx, path in enumerate(image_paths)]
+    
+    # Load images in parallel
+    images = [None] * len(image_paths)
+    loaded_count = 0
+    
+    if progress_callback:
+        progress_callback("Loading images...", 0, len(image_paths))
+    
+    with Pool(processes=num_workers) as pool:
+        # Use imap for better progress tracking
+        results = pool.imap(_load_single_image, paths_with_indices, chunksize=max(1, len(image_paths) // (num_workers * 4)))
+        
+        for idx, img in results:
+            images[idx] = img
+            loaded_count += 1
+            
+            # Update progress every 10 images or at milestones
+            if progress_callback and (loaded_count % 10 == 0 or loaded_count == len(image_paths)):
+                progress_callback(f"Loading images... ({loaded_count}/{len(image_paths)})", 
+                                loaded_count, len(image_paths))
+    
+    # Filter out None values (failed loads) and return
+    if return_paths:
+        valid_images = []
+        valid_image_paths = []
+        for idx, img in enumerate(images):
+            if img is not None:
+                valid_images.append(img)
+                valid_image_paths.append(image_paths[idx])
+        return (valid_images, valid_image_paths)
+    else:
+        valid_images = [img for img in images if img is not None]
+        return valid_images
 

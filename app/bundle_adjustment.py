@@ -17,6 +17,7 @@ try:
     ISOLATION_NEIGHBOR_NUM = default_cfg.isolation_neighboor_num
     BA_LEARNING_RATE = default_cfg.ba_learning_rate
     BA_MAX_ITERATIONS = default_cfg.ba_max_iterations
+    BA_DECAY_RATE = default_cfg.ba_decay_rate
     REPROJECTION_ERROR_THRESHOLD = default_cfg.reprojection_error_threshold
 except ImportError:
     # Fallback defaults if config file not found
@@ -24,6 +25,7 @@ except ImportError:
     ISOLATION_NEIGHBOR_NUM = 2
     BA_LEARNING_RATE = 1e-3
     BA_MAX_ITERATIONS = 1000
+    BA_DECAY_RATE = 0.998
     REPROJECTION_ERROR_THRESHOLD = 10.0
 
 
@@ -686,6 +688,7 @@ class BundleAdjustment:
             marker_params_t: Marker parameters tensor
             camera_params_t: Camera parameters tensor
             optimizer: PyTorch optimizer
+            scheduler: Learning rate scheduler (ExponentialLR)
             marker_id_to_idx: Mapping from marker ID to index
             frame_idx_to_param_idx: Mapping from frame index to parameter index
             free_marker_ids: List of free marker IDs
@@ -762,14 +765,15 @@ class BundleAdjustment:
         camera_params_t = torch.nn.Parameter(torch.from_numpy(camera_params).to(device), requires_grad=True)
         
         optimizer = torch.optim.Adam([marker_params_t, camera_params_t], lr=BA_LEARNING_RATE)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=BA_DECAY_RATE)
         
         return (detected_corners_t, visibility_mask_t, K_t, obj_points_t, 
-                marker_params_t, camera_params_t, optimizer,
+                marker_params_t, camera_params_t, optimizer, scheduler,
                 marker_id_to_idx, frame_idx_to_param_idx, free_marker_ids,
                 n_images, n_aruco, n_corners)
 
     def _run_pytorch_optimization(self, detected_corners_t, visibility_mask_t, K_t, obj_points_t,
-                                 marker_params_t, camera_params_t, optimizer,
+                                 marker_params_t, camera_params_t, optimizer, scheduler,
                                  marker_id_to_idx, frame_idx_to_param_idx, free_marker_ids,
                                  ref_marker_id, n_images, n_aruco, n_corners, enable_ba):
         """
@@ -858,6 +862,8 @@ class BundleAdjustment:
             if enable_ba:
                 loss.backward()
                 optimizer.step()
+                # Apply learning rate decay
+                scheduler.step()
             else:
                 # Clear gradients without backward propagation
                 optimizer.zero_grad()
@@ -869,8 +875,9 @@ class BundleAdjustment:
                 mean_error = reprojection_error.sum() / (mask_expanded.sum() * n_corners + 1e-8)
                 mean_error = mean_error.item()
                 progress_pct = int(100 * (iter_idx + 1) / max_iterations)
-                log_msg = f"Optimizing... Iter {iter_idx+1}/{max_iterations} ({progress_pct}%): error = {mean_error:.2f} pixels"
-                print(f"[NO-BA2] Iter {iter_idx+1}/{max_iterations}: mean reprojection error = {mean_error:.4f} pixels")
+                current_lr = optimizer.param_groups[0]['lr']
+                log_msg = f"Optimizing... Iter {iter_idx+1}/{max_iterations} ({progress_pct}%): error = {mean_error:.2f} pixels, lr = {current_lr:.6f}, decay = {BA_DECAY_RATE}"
+                print(f"[NO-BA2] Iter {iter_idx+1}/{max_iterations}: mean reprojection error = {mean_error:.4f} pixels, lr = {current_lr:.6f}, decay = {BA_DECAY_RATE}")
                 if self.progress_callback:
                     self.progress_callback(log_msg, iter_idx + 1, max_iterations)
 
@@ -1263,7 +1270,7 @@ class BundleAdjustment:
         
         # 7) Prepare for PyTorch optimization
         (detected_corners_t, visibility_mask_t, K_t, obj_points_t,
-         marker_params_t, camera_params_t, optimizer,
+         marker_params_t, camera_params_t, optimizer, scheduler,
          marker_id_to_idx, frame_idx_to_param_idx, free_marker_ids,
          n_images, n_aruco, n_corners) = self._prepare_pytorch_optimization(
             detections, all_marker_ids, all_frame_indices,
@@ -1273,7 +1280,7 @@ class BundleAdjustment:
         # 8) Run PyTorch optimization
         marker_params_opt, camera_params_opt, final_mean_error = self._run_pytorch_optimization(
             detected_corners_t, visibility_mask_t, K_t, obj_points_t,
-            marker_params_t, camera_params_t, optimizer,
+            marker_params_t, camera_params_t, optimizer, scheduler,
             marker_id_to_idx, frame_idx_to_param_idx, free_marker_ids,
             ref_marker_id, n_images, n_aruco, n_corners, enable_ba
         )

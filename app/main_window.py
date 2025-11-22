@@ -37,7 +37,7 @@ except ImportError:
 try:
     from .utils import (
         safe_read_json, safe_write_json, validate_frame_id, 
-        get_image_name_safe, safe_get_nested_dict
+        get_image_name_safe, safe_get_nested_dict, load_images_parallel
     )
     USE_UTILS = True
 except ImportError:
@@ -232,11 +232,23 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "No images found in directory")
             return
         
-        images = []
-        for path in image_paths:
-            img = cv2.imread(path)
-            if img is not None:
-                images.append(img)
+        # Use parallel image loading for better performance
+        if USE_UTILS:
+            def progress_callback(message, current, total):
+                """Wrapper to log progress messages"""
+                self.labeling_tab.log_message(message)
+            
+            images, image_paths = load_images_parallel(image_paths, num_workers=None, progress_callback=progress_callback, return_paths=True)
+        else:
+            # Fallback to sequential loading if utils not available
+            images = []
+            valid_paths = []
+            for path in image_paths:
+                img = cv2.imread(path)
+                if img is not None:
+                    images.append(img)
+                    valid_paths.append(path)
+            image_paths = valid_paths
         
         if not images:
             QMessageBox.warning(self, "Error", "Failed to load images")
