@@ -65,8 +65,9 @@ class TrajectoryTab(QWidget):
         
         # Show progress dialog for visualization
         total_steps = len(aruco_poses) + len(camera_poses) + 5  # +5 for setup steps
-        progress_dialog = QProgressDialog("Visualizing trajectory...", None, 0, total_steps, self)
-        progress_dialog.setWindowTitle("Visualization")
+        task_name = "Visualization"
+        progress_dialog = QProgressDialog("", None, 0, total_steps, self)
+        progress_dialog.setWindowTitle(task_name)
         progress_dialog.setWindowModality(Qt.WindowModal)
         progress_dialog.setCancelButton(None)
         progress_dialog.setMinimumDuration(0)
@@ -80,7 +81,7 @@ class TrajectoryTab(QWidget):
         self.fig.clear()
         current_step += 1
         progress_dialog.setValue(current_step)
-        progress_dialog.setLabelText("Clearing previous plots...")
+        progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
         QApplication.processEvents()
         
         # Create 3D subplot
@@ -165,7 +166,7 @@ class TrajectoryTab(QWidget):
                 if (idx + 1) % 5 == 0 or (idx + 1) == total_markers:
                     current_step += 1
                     progress_dialog.setValue(current_step)
-                    progress_dialog.setLabelText(f"Plotting ArUco markers... ({idx + 1}/{total_markers})")
+                    progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
                     QApplication.processEvents()
             
             if marker_pos_list:
@@ -175,7 +176,7 @@ class TrajectoryTab(QWidget):
         if camera_poses:
             current_step += 1
             progress_dialog.setValue(current_step)
-            progress_dialog.setLabelText("Computing camera trajectory...")
+            progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
             QApplication.processEvents()
             
             camera_pos_list = []
@@ -195,7 +196,7 @@ class TrajectoryTab(QWidget):
                 
                 # Update progress every 20 frames or at the end
                 if (idx + 1) % 20 == 0 or (idx + 1) == total_cameras:
-                    progress_dialog.setLabelText(f"Computing camera trajectory... ({idx + 1}/{total_cameras})")
+                    progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
                     QApplication.processEvents()
             
             if camera_pos_list:
@@ -205,7 +206,7 @@ class TrajectoryTab(QWidget):
                 
                 current_step += 1
                 progress_dialog.setValue(current_step)
-                progress_dialog.setLabelText("Plotting camera trajectory line...")
+                progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
                 QApplication.processEvents()
                 
                 # Plot camera trajectory line (red, thick, high z-order)
@@ -216,7 +217,7 @@ class TrajectoryTab(QWidget):
         if camera_poses:
             current_step += 1
             progress_dialog.setValue(current_step)
-            progress_dialog.setLabelText("Plotting camera poses...")
+            progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
             QApplication.processEvents()
             
             sample_rate = max(1, len(camera_poses) // 20)  # Show ~20 camera poses
@@ -270,13 +271,13 @@ class TrajectoryTab(QWidget):
                 
                 # Update progress
                 if (plot_idx + 1) % 5 == 0 or (plot_idx + 1) == total_sampled:
-                    progress_dialog.setLabelText(f"Plotting camera poses... ({plot_idx + 1}/{total_sampled})")
+                    progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
                     QApplication.processEvents()
         
         # Set labels and title
         current_step += 1
         progress_dialog.setValue(current_step)
-        progress_dialog.setLabelText("Setting up axes and labels...")
+        progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
         QApplication.processEvents()
         
         ax.set_xlabel('X (m)', color='#cccccc')
@@ -334,7 +335,7 @@ class TrajectoryTab(QWidget):
         # Refresh canvas
         current_step += 1
         progress_dialog.setValue(current_step)
-        progress_dialog.setLabelText("Rendering visualization...")
+        progress_dialog.setLabelText(f"{task_name}: {current_step} / {total_steps}")
         QApplication.processEvents()
         
         self.fig.tight_layout()

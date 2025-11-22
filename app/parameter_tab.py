@@ -5,8 +5,9 @@ Parameter input tab for the application
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                 QLineEdit, QPushButton, QFileDialog, QComboBox,
                                 QTextEdit, QGroupBox, QGridLayout, QMessageBox,
-                                QDialog, QDialogButtonBox, QSpinBox, QCheckBox)
-from PySide6.QtCore import Signal
+                                QDialog, QDialogButtonBox, QSpinBox, QCheckBox,
+                                QProgressDialog, QApplication)
+from PySide6.QtCore import Signal, Qt
 import os
 import sys
 import numpy as np
@@ -15,9 +16,10 @@ from pathlib import Path
 # Import video extraction function and default configuration
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
-    from video2image import extract_frames
+    from .video2image import extract_frames, VideoExtractionThread
 except ImportError:
     extract_frames = None
+    VideoExtractionThread = None
 
 try:
     import default_cfg
@@ -33,6 +35,9 @@ class ParameterTab(QWidget):
     
     def __init__(self):
         super().__init__()
+        self.progress_dialog = None  # Progress dialog for video extraction
+        self.video_extraction_thread = None  # Thread for video extraction
+        self.pending_image_dir = None  # Store image_dir to use after extraction
         self.init_ui()
     
     def init_ui(self):
@@ -215,6 +220,161 @@ class ParameterTab(QWidget):
             return downsample_spin.value()
         return None
     
+    def _update_video_extraction_progress(self, message, current, total):
+        """Update progress dialog for video extraction with standardized format"""
+        if self.progress_dialog:
+            # Extract task name from message (use first part before "..." or use default)
+            task_name = "Extracting Video"
+            if message:
+                if "..." in message:
+                    task_name = message.split("...")[0].strip()
+                elif "(" in message:
+                    task_name = message.split("(")[0].strip()
+                else:
+                    # Try to identify common task names from message
+                    msg_lower = message.lower()
+                    if "extracting frames" in msg_lower or "extraction" in msg_lower:
+                        task_name = "Extracting Video"
+                    else:
+                        task_name = message.split(":")[0].strip() if ":" in message else message.strip()
+            
+            # Update window title with task name
+            self.progress_dialog.setWindowTitle(task_name)
+            
+            # Format label text as "Task Name: current / total" if we have valid values
+            if total > 0:
+                label_text = f"{task_name}: {current} / {total}"
+                self.progress_dialog.setLabelText(label_text)
+                # Update progress bar
+                progress_pct = int(100 * current / total)
+                self.progress_dialog.setValue(progress_pct)
+                self.progress_dialog.setRange(0, 100)
+            else:
+                # Indeterminate progress (spinner mode) - show task name and message
+                label_text = f"{task_name}: {message}" if message else f"{task_name}..."
+                self.progress_dialog.setLabelText(label_text)
+                self.progress_dialog.setRange(0, 0)
+            QApplication.processEvents()  # Update UI
+    
+    def _on_video_extraction_complete(self, result):
+        """Handle completion of video extraction"""
+        # Hide progress dialog
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
+        if result['success']:
+            saved_count = result['saved_count']
+            image_dir = result['output_dir']
+            
+            self.log_message(f"Extracted {saved_count} frames to: {image_dir}")
+            QMessageBox.information(
+                self,
+                "Video Extraction Complete",
+                f"Successfully extracted {saved_count} frames from the video.\n\n"
+                f"Images saved to: {image_dir}\n\n"
+                f"Continuing with processing..."
+            )
+            
+            # Continue with processing using the extracted directory
+            self.pending_image_dir = image_dir
+            self._continue_processing_after_extraction()
+        else:
+            QMessageBox.critical(
+                self,
+                "Video Extraction Error",
+                f"Failed to extract frames from video:\n{result.get('error', 'Unknown error')}"
+            )
+        
+        # Clean up thread
+        if self.video_extraction_thread:
+            self.video_extraction_thread = None
+    
+    def _continue_processing_after_extraction(self):
+        """Continue processing after video extraction completes"""
+        if self.pending_image_dir is None:
+            return
+        
+        image_dir = self.pending_image_dir
+        self.pending_image_dir = None
+        
+        # Now check if image_dir is a valid directory
+        if not os.path.isdir(image_dir):
+            QMessageBox.warning(self, "Error", f"Image directory does not exist: {image_dir}")
+            return
+        
+        # Continue with the rest of start_processing logic
+        self._process_images(image_dir)
+    
+    def _process_images(self, image_dir):
+        """Process images after video extraction or when image directory is provided"""
+        physical_length = self.physical_length_edit.text().strip()
+        try:
+            physical_length = float(physical_length)
+            if physical_length <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Please enter a valid positive physical length!")
+            return
+        
+        # Get ArUco size
+        aruco_size_str = self.aruco_size_combo.currentText()
+        aruco_size = int(aruco_size_str.split('x')[0])
+        
+        # Determine dictionary type based on size
+        dict_type_map = {
+            4: 'DICT_4X4_50',
+            5: 'DICT_5X5_50',
+            6: 'DICT_6X6_50'
+        }
+        dict_type = dict_type_map[aruco_size]
+        
+        # Parse camera intrinsic (required)
+        fx = self.fx_edit.text().strip()
+        fy = self.fy_edit.text().strip()
+        cx = self.cx_edit.text().strip()
+        cy = self.cy_edit.text().strip()
+        
+        if not (fx and fy and cx and cy):
+            QMessageBox.warning(self, "Error", "Camera intrinsic parameters are required! Please enter fx, fy, cx, cy.")
+            return
+        
+        try:
+            fx = float(fx)
+            fy = float(fy)
+            cx = float(cx)
+            cy = float(cy)
+            if fx <= 0 or fy <= 0:
+                raise ValueError("Focal lengths must be positive")
+            camera_intrinsic = np.array([
+                [fx, 0, cx],
+                [0, fy, cy],
+                [0, 0, 1]
+            ], dtype=np.float64)
+        except ValueError as e:
+            QMessageBox.warning(self, "Error", f"Invalid camera intrinsic values: {str(e)}")
+            return
+        
+        # Get JSON path (optional)
+        json_path = self.json_edit.text().strip() if self.json_edit.text() else None
+        if json_path and not os.path.exists(json_path):
+            QMessageBox.warning(self, "Warning", f"JSON file not found: {json_path}\nProceeding without loading JSON.")
+            json_path = None
+        
+        # Get enable_ba flag
+        enable_ba = self.enable_ba_checkbox.isChecked()
+        
+        # Emit parameters ready signal
+        self.parameters_ready.emit({
+            'image_dir': image_dir,
+            'physical_length': physical_length,
+            'aruco_size': aruco_size,
+            'dict_type': dict_type,
+            'camera_intrinsic': camera_intrinsic,
+            'json_path': json_path,
+            'enable_ba': enable_ba
+        })
+    
     def start_processing(self):
         # Validate inputs
         input_path = self.dir_edit.text().strip()
@@ -227,7 +387,7 @@ class ParameterTab(QWidget):
         # Check if input is a video file
         if self._is_video_file(input_path):
             # Check if extract_frames function is available
-            if extract_frames is None:
+            if extract_frames is None or VideoExtractionThread is None:
                 QMessageBox.critical(
                     self, 
                     "Error", 
@@ -241,33 +401,31 @@ class ParameterTab(QWidget):
                 # User canceled
                 return
             
-            try:
-                # Extract frames from video
-                self.log_message(f"Extracting frames from video: {input_path}")
-                self.log_message(f"Downsample ratio: {downsample}")
-                
-                # Extract frames - output_dir will be automatically set based on video name
-                saved_count = extract_frames(input_path, output_dir=None, downsample=downsample)
-                
-                # Update image_dir to point to the extracted directory
-                video_path = Path(input_path)
-                image_dir = str(video_path.parent / video_path.stem)
-                
-                self.log_message(f"Extracted {saved_count} frames to: {image_dir}")
-                QMessageBox.information(
-                    self,
-                    "Video Extraction Complete",
-                    f"Successfully extracted {saved_count} frames from the video.\n\n"
-                    f"Images saved to: {image_dir}\n\n"
-                    f"Continuing with processing..."
-                )
-            except Exception as e:
-                QMessageBox.critical(
-                    self,
-                    "Video Extraction Error",
-                    f"Failed to extract frames from video:\n{str(e)}"
-                )
-                return
+            # Store values for use after extraction completes
+            self.pending_image_dir = None  # Will be set after extraction
+            
+            # Extract frames from video using thread
+            self.log_message(f"Extracting frames from video: {input_path}")
+            self.log_message(f"Downsample ratio: {downsample}")
+            
+            # Show progress dialog
+            self.progress_dialog = QProgressDialog("", None, 0, 100, self)
+            self.progress_dialog.setWindowTitle("Video Extraction")
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.setCancelButton(None)  # No cancel button
+            self.progress_dialog.setMinimumDuration(0)  # Show immediately
+            self.progress_dialog.setValue(0)
+            self.progress_dialog.show()
+            QApplication.processEvents()  # Ensure dialog is shown
+            
+            # Create and start extraction thread
+            self.video_extraction_thread = VideoExtractionThread(input_path, output_dir=None, downsample=downsample)
+            self.video_extraction_thread.progress_signal.connect(self._update_video_extraction_progress)
+            self.video_extraction_thread.finished_signal.connect(self._on_video_extraction_complete)
+            self.video_extraction_thread.start()
+            
+            # Return early - processing will continue in _on_video_extraction_complete
+            return
         
         # Now check if image_dir is a valid directory
         if not os.path.isdir(image_dir):

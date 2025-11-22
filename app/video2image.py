@@ -3,8 +3,14 @@ import os
 import argparse
 from pathlib import Path
 
+try:
+    from PySide6.QtCore import QThread, Signal
+    QT_AVAILABLE = True
+except ImportError:
+    QT_AVAILABLE = False
 
-def extract_frames(video_path, output_dir=None, downsample=30):
+
+def extract_frames(video_path, output_dir=None, downsample=30, progress_callback=None):
     """
     Extract frames from a video file and save them as JPG images.
     
@@ -13,6 +19,8 @@ def extract_frames(video_path, output_dir=None, downsample=30):
         output_dir (str, optional): Directory to save images. If None, uses directory
                                     with the same name as the video (without extension)
         downsample (int): Downsampling ratio. Save every Nth frame (default: 30)
+        progress_callback (callable, optional): Function to call with progress updates.
+                                               Called as progress_callback(message, current, total)
     
     Returns:
         int: Number of frames extracted
@@ -48,6 +56,9 @@ def extract_frames(video_path, output_dir=None, downsample=30):
     print(f"Downsample ratio: {downsample} (saving every {downsample} frames)")
     print(f"Output directory: {output_dir}")
     
+    if progress_callback:
+        progress_callback(f"Extracting frames from video...", 0, total_frames)
+    
     frame_count = 0
     saved_count = 0
     
@@ -65,13 +76,23 @@ def extract_frames(video_path, output_dir=None, downsample=30):
             saved_count += 1
         
         # Progress indicator
-        if (frame_count + 1) % 100 == 0:
+        if progress_callback:
+            # Update progress every frame for smoother progress bar
+            progress_callback(
+                f"Extracting frames... ({frame_count + 1}/{total_frames}, saved: {saved_count})",
+                frame_count + 1,
+                total_frames
+            )
+        elif (frame_count + 1) % 100 == 0:
             print(f"Processed {frame_count + 1}/{total_frames} frames...")
         
         frame_count += 1
     
     # Release video capture
     cap.release()
+    
+    if progress_callback:
+        progress_callback(f"Extraction complete! Saved {saved_count} frames.", total_frames, total_frames)
     
     print(f"\nExtraction complete!")
     print(f"Saved {saved_count} frames to {output_dir}")
@@ -107,6 +128,52 @@ def main():
         return 1
     
     return 0
+
+
+if QT_AVAILABLE:
+    class VideoExtractionThread(QThread):
+        """Thread for extracting video frames with progress updates"""
+        progress_signal = Signal(str, int, int)  # message, current, total (0, 0 for indeterminate)
+        finished_signal = Signal(dict)  # {'success': bool, 'saved_count': int, 'output_dir': str, 'error': str}
+        
+        def __init__(self, video_path, output_dir=None, downsample=30):
+            super().__init__()
+            self.video_path = video_path
+            self.output_dir = output_dir
+            self.downsample = downsample
+        
+        def run(self):
+            """Run video extraction in background thread"""
+            def progress_callback(message, current, total):
+                self.progress_signal.emit(message, current, total)
+            
+            try:
+                saved_count = extract_frames(
+                    self.video_path,
+                    output_dir=self.output_dir,
+                    downsample=self.downsample,
+                    progress_callback=progress_callback
+                )
+                
+                # Determine output directory
+                video_path = Path(self.video_path)
+                if self.output_dir is None:
+                    output_dir = str(video_path.parent / video_path.stem)
+                else:
+                    output_dir = str(self.output_dir)
+                
+                self.finished_signal.emit({
+                    'success': True,
+                    'saved_count': saved_count,
+                    'output_dir': output_dir
+                })
+            except Exception as e:
+                self.finished_signal.emit({
+                    'success': False,
+                    'error': str(e),
+                    'saved_count': 0,
+                    'output_dir': None
+                })
 
 
 if __name__ == "__main__":

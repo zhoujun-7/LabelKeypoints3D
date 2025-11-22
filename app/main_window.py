@@ -402,7 +402,7 @@ class MainWindow(QMainWindow):
                 self.labeling_tab.log_message(f"Proceeding with all {num_images} images (may take longer)")
         
         # Show progress dialog with progress bar
-        self.progress_dialog = QProgressDialog("Calculating ArUco markers and camera poses...", None, 0, 100, self)
+        self.progress_dialog = QProgressDialog("", None, 0, 100, self)
         self.progress_dialog.setWindowTitle("Processing")
         self.progress_dialog.setWindowModality(Qt.WindowModal)
         self.progress_dialog.setCancelButton(None)  # No cancel button
@@ -429,17 +429,51 @@ class MainWindow(QMainWindow):
         self.aruco_processor.start()
     
     def _update_progress_message(self, message, current=0, total=0):
-        """Update progress dialog message with progress percentage"""
+        """Update progress dialog message with standardized format"""
         if self.progress_dialog:
-            self.progress_dialog.setLabelText(message)
-            # Update progress bar if we have valid progress values
+            # Extract task name from message
+            task_name = "Processing"
+            if message:
+                msg_lower = message.lower()
+                # Identify specific tasks from message content
+                # Check for "loading images" FIRST to distinguish it from detection
+                if "loading images" in msg_lower:
+                    task_name = "Loading Images"
+                elif "bundle adjustment" in msg_lower or "performing bundle adjustment" in msg_lower:
+                    task_name = "Bundle Adjustment"
+                elif "optimizing" in msg_lower or "iter" in msg_lower:
+                    task_name = "Bundle Adjustment"
+                elif "detecting aruco" in msg_lower or ("detected" in msg_lower and "aruco" in msg_lower):
+                    task_name = "Detecting ArUco"
+                elif "loaded" in msg_lower and "images" in msg_lower:
+                    # "Loaded X images" - transition from loading to detection
+                    task_name = "Loading Images"
+                elif "filtered" in msg_lower:
+                    task_name = "Detecting ArUco"  # Filtering is part of ArUco detection
+                elif "..." in message:
+                    task_name = message.split("...")[0].strip()
+                elif "(" in message:
+                    task_name = message.split("(")[0].strip()
+                elif ":" in message:
+                    task_name = message.split(":")[0].strip()
+                else:
+                    task_name = message.strip()
+            
+            # Update window title with task name
+            self.progress_dialog.setWindowTitle(task_name)
+            
+            # Format label text as "Task Name: current / total" if we have valid values
             if total > 0:
-                # Calculate percentage
+                label_text = f"{task_name}: {current} / {total}"
+                self.progress_dialog.setLabelText(label_text)
+                # Update progress bar
                 progress_pct = int(100 * current / total)
                 self.progress_dialog.setValue(progress_pct)
                 self.progress_dialog.setRange(0, 100)
             else:
-                # Indeterminate progress (spinner mode)
+                # Indeterminate progress (spinner mode) - show task name and message
+                label_text = f"{task_name}: {message}" if message else f"{task_name}..."
+                self.progress_dialog.setLabelText(label_text)
                 self.progress_dialog.setRange(0, 0)
             QApplication.processEvents()  # Update UI
     
